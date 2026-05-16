@@ -43,6 +43,14 @@ if (targetBrowser === "firefox") {
     scripts: ["background.js"],
     type: "module",
   };
+  // MV3 默认 CSP 隐含 upgrade-insecure-requests，Firefox 会据此把扩展
+  // 自身发起的 ws:// 升级为 wss://（无 Chrome 那种 localhost 豁免），
+  // 导致连不上明文 WebSocket 服务端。本扩展显式支持用户配置 ws:// 服务端，
+  // 故按 Mozilla 文档显式覆盖 extension_pages CSP，去掉该升级指令；
+  // 其余沿用 MV3 默认（script-src/object-src 'self'）。
+  manifest.content_security_policy = {
+    extension_pages: "script-src 'self'; object-src 'self'",
+  };
 } else {
   const extensionKey = normalizeExtensionKey(
     process.env.BILI_SYNCPLAY_EXTENSION_KEY,
