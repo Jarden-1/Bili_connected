@@ -142,6 +142,7 @@ export type AdminUiConfig = {
 export type SecurityConfig = {
   allowedOrigins: string[];
   allowMissingOriginInDev: boolean;
+  allowAnyFirefoxExtensionOrigin: boolean;
   trustedProxyAddresses: string[];
   maxConnectionsPerIp: number;
   connectionAttemptsPerMinute: number;

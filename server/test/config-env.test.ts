@@ -238,6 +238,7 @@ test("logEffectiveOriginPolicy prints final origins and dev override once", () =
     {
       allowedOrigins: ["https://a.example", "https://b.example"],
       allowMissingOriginInDev: false,
+      allowAnyFirefoxExtensionOrigin: false,
     } as ReturnType<typeof loadSecurityConfig>,
     log,
   );
@@ -245,12 +246,31 @@ test("logEffectiveOriginPolicy prints final origins and dev override once", () =
     {
       allowedOrigins: [],
       allowMissingOriginInDev: true,
+      allowAnyFirefoxExtensionOrigin: true,
     } as ReturnType<typeof loadSecurityConfig>,
     log,
   );
 
   assert.deepEqual(entries, [
-    "[security] ALLOWED_ORIGINS=https://a.example, https://b.example; ALLOW_MISSING_ORIGIN_IN_DEV=false",
-    "[security] ALLOWED_ORIGINS=<none>; ALLOW_MISSING_ORIGIN_IN_DEV=true",
+    "[security] ALLOWED_ORIGINS=https://a.example, https://b.example; ALLOW_MISSING_ORIGIN_IN_DEV=false; ALLOW_ANY_FIREFOX_EXTENSION_ORIGIN=false",
+    "[security] ALLOWED_ORIGINS=<none>; ALLOW_MISSING_ORIGIN_IN_DEV=true; ALLOW_ANY_FIREFOX_EXTENSION_ORIGIN=true",
   ]);
+});
+
+test("security config parses ALLOW_ANY_FIREFOX_EXTENSION_ORIGIN", () => {
+  assert.equal(loadSecurityConfig({}).allowAnyFirefoxExtensionOrigin, false);
+  assert.equal(
+    loadSecurityConfig({ ALLOW_ANY_FIREFOX_EXTENSION_ORIGIN: "true" })
+      .allowAnyFirefoxExtensionOrigin,
+    true,
+  );
+});
+
+test("startup policy allows empty origins when any-firefox-extension is enabled", () => {
+  const config = loadSecurityConfig({
+    ALLOW_ANY_FIREFOX_EXTENSION_ORIGIN: "true",
+  });
+  assert.deepEqual(config.allowedOrigins, []);
+  assert.equal(config.allowMissingOriginInDev, false);
+  assert.doesNotThrow(() => assertAllowedOriginsStartupPolicy(config));
 });

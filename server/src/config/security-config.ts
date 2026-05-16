@@ -1,16 +1,21 @@
 import { getDefaultSecurityConfig, type SecurityConfig } from "../app.js";
+import { checkBareOrigin } from "../origin.js";
 import type { EnvSource } from "./env.js";
 import {
   loadSectionConfigFromEnv,
   SECURITY_CONFIG_FIELDS,
 } from "./runtime-config-schema.js";
 
-const SUPPORTED_ORIGIN_PROTOCOLS = new Set([
+const SUPPORTED_ORIGIN_PROTOCOLS: ReadonlySet<string> = new Set([
   "http:",
   "https:",
   "chrome-extension:",
   "moz-extension:",
 ]);
+
+const SUPPORTED_SCHEME_LIST = [...SUPPORTED_ORIGIN_PROTOCOLS]
+  .map((protocol) => protocol.replace(/:$/, ""))
+  .join(", ");
 
 export class SecurityConfigError extends Error {
   constructor(message: string) {
@@ -21,43 +26,37 @@ export class SecurityConfigError extends Error {
 
 export function validateAllowedOriginValues(origins: readonly string[]): void {
   for (const origin of origins) {
-    if (typeof origin !== "string" || origin.length === 0) {
-      throw new SecurityConfigError(
-        `ALLOWED_ORIGINS contains an empty or non-string entry.`,
-      );
+    // 与运行期 Firefox 放行复用同一份裸 origin 规则（origin.ts），
+    // 这里仅把失败原因映射回面向运维的具体报错文案。
+    const result = checkBareOrigin(origin, SUPPORTED_ORIGIN_PROTOCOLS);
+    if (result.ok) {
+      continue;
     }
-    if (origin.includes("*")) {
-      throw new SecurityConfigError(
-        `ALLOWED_ORIGINS entry "${origin}" uses a wildcard, which is not supported.`,
-      );
-    }
-
-    let parsed: URL;
-    try {
-      parsed = new URL(origin);
-    } catch {
-      throw new SecurityConfigError(
-        `ALLOWED_ORIGINS entry "${origin}" is not a valid absolute URL.`,
-      );
-    }
-
-    if (!SUPPORTED_ORIGIN_PROTOCOLS.has(parsed.protocol)) {
-      throw new SecurityConfigError(
-        `ALLOWED_ORIGINS entry "${origin}" uses unsupported scheme "${parsed.protocol.replace(/:$/, "")}"; expected one of http, https, chrome-extension, moz-extension.`,
-      );
-    }
-
-    if (parsed.host.length === 0) {
-      throw new SecurityConfigError(
-        `ALLOWED_ORIGINS entry "${origin}" must include a host.`,
-      );
-    }
-
-    const canonical = `${parsed.protocol}//${parsed.host}`;
-    if (origin !== canonical) {
-      throw new SecurityConfigError(
-        `ALLOWED_ORIGINS entry "${origin}" must be a bare origin like "${canonical}" — no path, query, fragment, userinfo, trailing slash, or mixed-case host (HTTP Origin headers are exact-matched).`,
-      );
+    switch (result.reason) {
+      case "empty":
+        throw new SecurityConfigError(
+          `ALLOWED_ORIGINS contains an empty or non-string entry.`,
+        );
+      case "wildcard":
+        throw new SecurityConfigError(
+          `ALLOWED_ORIGINS entry "${origin}" uses a wildcard, which is not supported.`,
+        );
+      case "invalid_url":
+        throw new SecurityConfigError(
+          `ALLOWED_ORIGINS entry "${origin}" is not a valid absolute URL.`,
+        );
+      case "unsupported_scheme":
+        throw new SecurityConfigError(
+          `ALLOWED_ORIGINS entry "${origin}" uses unsupported scheme "${result.scheme.replace(/:$/, "")}"; expected one of ${SUPPORTED_SCHEME_LIST}.`,
+        );
+      case "no_host":
+        throw new SecurityConfigError(
+          `ALLOWED_ORIGINS entry "${origin}" must include a host.`,
+        );
+      case "not_bare":
+        throw new SecurityConfigError(
+          `ALLOWED_ORIGINS entry "${origin}" must be a bare origin like "${result.canonical}" — no path, query, fragment, userinfo, trailing slash, or mixed-case host (HTTP Origin headers are exact-matched).`,
+        );
     }
   }
 }
@@ -65,9 +64,13 @@ export function validateAllowedOriginValues(origins: readonly string[]): void {
 export function assertAllowedOriginsStartupPolicy(
   config: SecurityConfig,
 ): void {
-  if (config.allowedOrigins.length === 0 && !config.allowMissingOriginInDev) {
+  if (
+    config.allowedOrigins.length === 0 &&
+    !config.allowMissingOriginInDev &&
+    !config.allowAnyFirefoxExtensionOrigin
+  ) {
     throw new SecurityConfigError(
-      "ALLOWED_ORIGINS is empty; set ALLOW_MISSING_ORIGIN_IN_DEV=true to run without origin restrictions in development, or configure ALLOWED_ORIGINS for production.",
+      "ALLOWED_ORIGINS is empty; set ALLOW_MISSING_ORIGIN_IN_DEV=true to run without origin restrictions in development, set ALLOW_ANY_FIREFOX_EXTENSION_ORIGIN=true to accept any Firefox extension origin, or configure ALLOWED_ORIGINS for production.",
     );
   }
 }
@@ -85,7 +88,7 @@ export function logEffectiveOriginPolicy(
       ? "<none>"
       : config.allowedOrigins.join(", ");
   log(
-    `[security] ALLOWED_ORIGINS=${origins}; ALLOW_MISSING_ORIGIN_IN_DEV=${String(config.allowMissingOriginInDev)}`,
+    `[security] ALLOWED_ORIGINS=${origins}; ALLOW_MISSING_ORIGIN_IN_DEV=${String(config.allowMissingOriginInDev)}; ALLOW_ANY_FIREFOX_EXTENSION_ORIGIN=${String(config.allowAnyFirefoxExtensionOrigin)}`,
   );
 }
 
