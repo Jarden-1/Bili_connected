@@ -32,6 +32,7 @@ type JsonObject = Record<string, unknown>;
 type SecurityConfigFile = {
   allowedOrigins?: string[];
   allowMissingOriginInDev?: boolean;
+  allowAnyFirefoxExtensionOrigin?: boolean;
   trustedProxyAddresses?: string[];
   maxConnectionsPerIp?: number;
   connectionAttemptsPerMinute?: number;

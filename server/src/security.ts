@@ -5,6 +5,7 @@ import {
   createWindowCounter,
   WINDOW_MINUTE_MS,
 } from "./rate-limit.js";
+import { isBareMozExtensionOrigin } from "./origin.js";
 import type { SecurityConfig, UpgradeDecision } from "./types.js";
 
 type AttemptWindowEntry = {
@@ -112,6 +113,18 @@ export function createSecurityPolicy(config: SecurityConfig): {
     }
 
     if (config.allowedOrigins.includes(origin)) {
+      return { ok: true };
+    }
+
+    // 公共服务端 opt-in：Firefox 扩展每装随机 moz-extension://<uuid>，
+    // 无法逐一枚举。开关开启时接受任意「格式正确的裸 moz-extension」
+    // origin。这不削弱边界——网页源永远是 http(s):// 不可能是
+    // moz-extension://（scheme 由浏览器结构性保证），故仍挡掉所有网页
+    // 源；真正的鉴权是 room/member token + 限流，与此正交。
+    if (
+      config.allowAnyFirefoxExtensionOrigin &&
+      isBareMozExtensionOrigin(origin)
+    ) {
       return { ok: true };
     }
 

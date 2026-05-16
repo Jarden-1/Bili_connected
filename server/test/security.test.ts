@@ -241,3 +241,94 @@ test("security policy lazily removes stale attempt windows after the TTL elapses
     },
   );
 });
+
+test("allowAnyFirefoxExtensionOrigin off: moz-extension still exact-match only", () => {
+  const config = getDefaultSecurityConfig();
+  config.allowedOrigins = ["chrome-extension://allowed-extension"];
+  const security = createSecurityPolicy(config);
+
+  assert.deepEqual(
+    security.isOriginAllowed(
+      "moz-extension://2b83faf4-40af-4e98-a9aa-e63c93821add",
+    ),
+    { ok: false, reason: "origin_not_allowed" },
+  );
+});
+
+test("allowAnyFirefoxExtensionOrigin on: any well-formed moz-extension origin allowed", () => {
+  const config = getDefaultSecurityConfig();
+  config.allowedOrigins = ["chrome-extension://allowed-extension"];
+  config.allowAnyFirefoxExtensionOrigin = true;
+  const security = createSecurityPolicy(config);
+
+  assert.deepEqual(
+    security.isOriginAllowed(
+      "moz-extension://2b83faf4-40af-4e98-a9aa-e63c93821add",
+    ),
+    { ok: true },
+  );
+  // 不同安装 = 不同 UUID，同样放行（无需逐一枚举）
+  assert.deepEqual(
+    security.isOriginAllowed(
+      "moz-extension://ffffffff-0000-1111-2222-333344445555",
+    ),
+    { ok: true },
+  );
+  // 配置的精确 origin 仍然有效
+  assert.deepEqual(
+    security.isOriginAllowed("chrome-extension://allowed-extension"),
+    { ok: true },
+  );
+});
+
+test("allowAnyFirefoxExtensionOrigin on: malformed moz-extension still rejected", () => {
+  const config = getDefaultSecurityConfig();
+  config.allowedOrigins = ["chrome-extension://allowed-extension"];
+  config.allowAnyFirefoxExtensionOrigin = true;
+  const security = createSecurityPolicy(config);
+
+  for (const bad of [
+    // 非裸 origin
+    "moz-extension://2b83faf4-40af-4e98-a9aa-e63c93821add/popup.html", // 带路径
+    "moz-extension://2b83faf4-40af-4e98-a9aa-e63c93821add/", // 尾斜杠
+    "moz-extension://user@2b83faf4-40af-4e98-a9aa-e63c93821add", // userinfo
+    "moz-extension://2b83faf4-40af-4e98-a9aa-e63c93821add?x=1", // 查询串
+    "moz-extension://*", // 通配
+    // 裸 origin 但 host 不是 Firefox UUID —— 真实 Firefox 永不产生，
+    // 须与文档「moz-extension://<uuid>」一致地拒绝
+    "moz-extension://not-a-uuid",
+    "moz-extension://foo:99",
+    "moz-extension://2B83FAF4-40AF-4E98-A9AA-E63C93821ADD", // 大写非 Firefox 形态
+    "moz-extension://2b83faf4-40af-4e98-a9aa-e63c93821ad", // 末段位数不足
+    "moz-extension://2b83faf440af4e98a9aae63c93821add", // 缺连字符
+  ]) {
+    assert.deepEqual(
+      security.isOriginAllowed(bad),
+      { ok: false, reason: "origin_not_allowed" },
+      `expected ${bad} to be rejected`,
+    );
+  }
+});
+
+test("allowAnyFirefoxExtensionOrigin on: non-extension origins still gated", () => {
+  const config = getDefaultSecurityConfig();
+  config.allowedOrigins = ["chrome-extension://allowed-extension"];
+  config.allowAnyFirefoxExtensionOrigin = true;
+  const security = createSecurityPolicy(config);
+
+  // 网页源永远是 http(s)://，开关不放行它们——Origin 防护未被削弱
+  assert.deepEqual(security.isOriginAllowed("https://evil.test"), {
+    ok: false,
+    reason: "origin_not_allowed",
+  });
+  // 未列出的 chrome-extension 仍精确匹配
+  assert.deepEqual(
+    security.isOriginAllowed("chrome-extension://some-other-extension"),
+    { ok: false, reason: "origin_not_allowed" },
+  );
+  // 缺失 origin 仍走原有 missing 逻辑（与本开关正交）
+  assert.deepEqual(security.isOriginAllowed(null), {
+    ok: false,
+    reason: "origin_missing",
+  });
+});
