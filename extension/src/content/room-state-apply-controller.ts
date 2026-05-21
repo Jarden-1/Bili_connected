@@ -251,18 +251,22 @@ export function createRoomStateApplyController(args: {
     // convention the sender only sets the flag for explicit gestures (never
     // for buffer-induced pauses or remote-state echoes), so we can apply
     // immediately and avoid the visible 250ms lag that the debounce otherwise
-    // adds to legitimate user pauses. Any deferred paused already in flight
-    // is dropped so the immediate apply isn't undone by a stale timer.
+    // adds to legitimate user pauses.
+    //
+    // The short-circuit is gated on the deferred slot already being clear —
+    // the upstream version-comparison block above clears it when the incoming
+    // state genuinely supersedes the deferred snapshot. If a deferred is
+    // still present here, the incoming state did NOT supersede it (older
+    // serverTime/seq, not a matching flicker), so taking the short-circuit
+    // would invert the version ordering. Yield to the normal path instead.
     const userInitiatedRemotePause =
       !fromDebounce &&
       state.playback &&
       state.playback.playState === "paused" &&
       state.playback.userInitiated === true &&
       args.runtimeState.localMemberId !== null &&
-      state.playback.actorId !== args.runtimeState.localMemberId;
-    if (userInitiatedRemotePause) {
-      clearDeferredRemotePaused();
-    }
+      state.playback.actorId !== args.runtimeState.localMemberId &&
+      args.runtimeState.deferredRemotePausedState === null;
 
     if (
       !fromDebounce &&

@@ -687,9 +687,11 @@ test("userInitiated remote paused cancels any already-deferred paused snapshot",
     assert.notEqual(harness.runtimeState.deferredRemotePausedState, null);
     assert.equal(win.scheduled.length, 1);
 
-    // Second arrival: same actor, now marked userInitiated → must wipe the
-    // deferred snapshot and apply immediately so a stale timer can't fire
-    // later and overwrite the freshly-applied state.
+    // Second arrival: same actor with a strictly newer seq, now marked
+    // userInitiated. The upstream version-comparison block clears the
+    // older deferred snapshot, and the short-circuit then applies the
+    // newer state immediately so a stale timer can't fire later and
+    // overwrite the freshly-applied state.
     await harness.controller.applyRoomState(
       createRoomStateWithPlayback({
         url: "https://www.bilibili.com/video/BV1xx411c7mD?p=1",
@@ -703,6 +705,61 @@ test("userInitiated remote paused cancels any already-deferred paused snapshot",
 
     assert.equal(harness.runtimeState.deferredRemotePausedState, null);
     assert.equal(harness.runtimeState.deferredRemotePausedTimerId, null);
+  } finally {
+    win.restore();
+  }
+});
+
+test("userInitiated remote paused does NOT short-circuit when the incoming state is older than an in-flight deferred", async () => {
+  const win = installWindowTimerStub();
+  try {
+    const video = createStubVideo(false);
+    let applyPending = 0;
+    const harness = createController({
+      video,
+      now: 30_000,
+      remotePauseDebounceMs: 250,
+      applyPendingPlaybackApplication: () => {
+        applyPending += 1;
+      },
+    });
+    harness.runtimeState.localMemberId = "local-member";
+
+    // First arrival: newer seq, no userInitiated → enters debounce.
+    await harness.controller.applyRoomState(
+      createRoomStateWithPlayback({
+        url: "https://www.bilibili.com/video/BV1xx411c7mD?p=1",
+        currentTime: 42,
+        playState: "paused",
+        actorId: "remote-member",
+        seq: 10,
+      }) as never,
+    );
+    assert.notEqual(harness.runtimeState.deferredRemotePausedState, null);
+    assert.equal(win.scheduled.length, 1);
+
+    // Second arrival: SAME actor but OLDER seq, with userInitiated=true.
+    // This models e.g. a delayed hydrate response landing after a newer
+    // realtime push. The upstream version-comparison block must preserve
+    // the in-flight deferred, and the short-circuit must NOT fire — taking
+    // it would lose the newer deferred snapshot via immediate apply.
+    await harness.controller.applyRoomState(
+      createRoomStateWithPlayback({
+        url: "https://www.bilibili.com/video/BV1xx411c7mD?p=1",
+        currentTime: 42,
+        playState: "paused",
+        actorId: "remote-member",
+        seq: 8,
+        userInitiated: true,
+      }) as never,
+    );
+
+    // The short-circuit didn't run: no immediate apply, no new debounce
+    // timer fires before the existing one. The deferred slot is still
+    // populated (either by the original deferred, or by the defer block's
+    // overwrite — that pre-existing PR #120 behaviour is out of scope here;
+    // what we verify is that this PR did NOT bypass debounce on the older).
+    assert.equal(applyPending, 0);
   } finally {
     win.restore();
   }
