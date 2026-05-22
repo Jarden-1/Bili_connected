@@ -131,6 +131,31 @@ export function createEventStore(capacity = 1_000): EventStore {
       );
     },
     countsByEventInWindow(eventNames, fromMs, toMs) {
+      // Preferred path: when the in-memory ring buffer reaches back to (or
+      // before) fromMs, every event in the window is still present, so we
+      // can count by literal ms timestamp and avoid the minute-bucket
+      // boundary fuzziness entirely.
+      const bufferCoversWindow =
+        events.length === 0 || eventTime(events[0]) <= fromMs;
+      const wanted = new Set(eventNames);
+      if (bufferCoversWindow) {
+        const counts = Object.fromEntries(
+          eventNames.map((name) => [name, 0]),
+        ) as Record<string, number>;
+        for (const event of events) {
+          if (!wanted.has(event.event)) continue;
+          const ts = eventTime(event);
+          if (ts >= fromMs && ts <= toMs) {
+            counts[event.event] += 1;
+          }
+        }
+        return counts;
+      }
+
+      // Fallback: high-volume case where the buffer has rolled past fromMs.
+      // Sum minute buckets that overlap [fromMs, toMs] — slight over-count
+      // bounded by the events in the leading partial bucket (at most one
+      // minute's worth), but never under-counts.
       const fromMinute = Math.floor(fromMs / MINUTE_MS);
       const toMinute = Math.floor(toMs / MINUTE_MS);
       return Object.fromEntries(

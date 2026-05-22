@@ -24,6 +24,18 @@ function encodeNullable(value: string | null | undefined): string {
   return value ?? "";
 }
 
+function parseStreamFields(fieldValues: string[]): Record<string, string> {
+  const fields: Record<string, string> = {};
+  for (let i = 0; i < fieldValues.length; i += 2) {
+    const key = fieldValues[i];
+    const value = fieldValues[i + 1];
+    if (key !== undefined && value !== undefined) {
+      fields[key] = value;
+    }
+  }
+  return fields;
+}
+
 function parseEvent(
   id: string,
   fields: Record<string, string>,
@@ -343,12 +355,41 @@ export async function createRedisEventStore(
         return {};
       }
       await pendingAppend;
-      const fromMinute = Math.floor(fromMs / MINUTE_MS);
-      const toMinute = Math.floor(toMs / MINUTE_MS);
       const wanted = new Set(eventNames);
       const totals = Object.fromEntries(
         eventNames.map((name) => [name, 0]),
       ) as Record<string, number>;
+
+      // Preferred path: scan the recent-event stream. If the oldest entry
+      // still in the stream reaches back to (or before) fromMs, the stream
+      // holds every event in the window and we can count by literal ms
+      // timestamp — exact, free of minute-bucket boundary fuzziness.
+      const streamEntries = await redis.xrange(streamKey, "-", "+");
+      if (streamEntries.length > 0) {
+        const oldestFields = parseStreamFields(streamEntries[0][1]);
+        const oldestTs = oldestFields.timestamp
+          ? Date.parse(oldestFields.timestamp)
+          : Number.NaN;
+        if (Number.isFinite(oldestTs) && oldestTs <= fromMs) {
+          for (const [, fieldValues] of streamEntries) {
+            const fields = parseStreamFields(fieldValues);
+            const name = fields.event;
+            if (!name || !wanted.has(name)) continue;
+            const ts = fields.timestamp ? Date.parse(fields.timestamp) : NaN;
+            if (!Number.isFinite(ts)) continue;
+            if (ts < fromMs || ts > toMs) continue;
+            totals[name] += 1;
+          }
+          return totals;
+        }
+      }
+
+      // Fallback: high-volume case where the stream has rolled past fromMs.
+      // Sum minute buckets that overlap [fromMs, toMs] — slight over-count
+      // bounded by the events in the leading partial bucket (at most one
+      // minute's worth), but never under-counts.
+      const fromMinute = Math.floor(fromMs / MINUTE_MS);
+      const toMinute = Math.floor(toMs / MINUTE_MS);
       const fields = await redis.hgetall(minuteCountsKey);
       for (const [field, raw] of Object.entries(fields)) {
         const colon = field.lastIndexOf(":");

@@ -243,13 +243,17 @@ test("overview aggregates event statistics from the event store", async () => {
   assert.equal(overview.events.totals.ws_connection_rejected, 1);
 });
 
-test("overview's last-minute window excludes events from the leading partial minute", async () => {
-  // Regression for the bucket-boundary over-count: at 12:07:30, the
-  // "last minute" ms range is [12:06:30, 12:07:30]. The rate_limited event
-  // at 12:06:15 lives in the 12:06 bucket whose first 30 seconds fall
-  // outside that range. With unaligned querying the bucket-based store
-  // would include it; the overview service must align the window to the
-  // current minute so only events inside the 12:07 bucket are counted.
+test("overview's last-minute window counts by ms timestamp across the bucket boundary", async () => {
+  // Regression for both boundary directions at 12:07:30 (last-minute
+  // ms range = [12:06:30, 12:07:30]):
+  //   - 12:06:15 lives in the 12:06 bucket but is OUTSIDE the ms range —
+  //     a pure minute-bucket sum would over-count it (Codex P1).
+  //   - 12:06:45 also lives in the 12:06 bucket but IS INSIDE the ms range —
+  //     snapping the query to the current minute bucket would under-count
+  //     it (Codex P2).
+  //   - 12:07:10 sits in the 12:07 bucket and is in range.
+  // The store's buffer-scan path must return ms-precise counts that
+  // include 12:06:45 + 12:07:10 and exclude 12:06:15.
   const now = Date.parse("2026-04-05T12:07:30.000Z");
   const roomStore = createInMemoryRoomStore({ now: () => now });
   const runtimeStore = createInMemoryRuntimeStore(() => now);
@@ -261,12 +265,17 @@ test("overview's last-minute window excludes events from the leading partial min
 
   await eventStore.append({
     event: "rate_limited",
-    timestamp: new Date(Date.parse("2026-04-05T12:06:15.000Z")).toISOString(),
+    timestamp: "2026-04-05T12:06:15.000Z",
     data: { result: "rejected" },
   });
   await eventStore.append({
     event: "rate_limited",
-    timestamp: new Date(Date.parse("2026-04-05T12:07:10.000Z")).toISOString(),
+    timestamp: "2026-04-05T12:06:45.000Z",
+    data: { result: "rejected" },
+  });
+  await eventStore.append({
+    event: "rate_limited",
+    timestamp: "2026-04-05T12:07:10.000Z",
     data: { result: "rejected" },
   });
 
@@ -282,7 +291,7 @@ test("overview's last-minute window excludes events from the leading partial min
   });
 
   const overview = await service.getOverview();
-  assert.equal(overview.events.lastMinute.rate_limited, 1);
-  assert.equal(overview.events.lastHour.rate_limited, 2);
-  assert.equal(overview.events.totals.rate_limited, 2);
+  assert.equal(overview.events.lastMinute.rate_limited, 2);
+  assert.equal(overview.events.lastHour.rate_limited, 3);
+  assert.equal(overview.events.totals.rate_limited, 3);
 });
