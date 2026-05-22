@@ -264,6 +264,48 @@ test("countsByEventInWindow ignores far-future timestamps when pruning the redis
   }
 });
 
+test("countsByEventInWindow uses current time when pruning slightly future redis timestamps", async (t) => {
+  if (!REDIS_URL) {
+    t.skip("REDIS_URL is not configured.");
+    return;
+  }
+
+  const keys = createKeyTriplet();
+  const store = await createRedisEventStore(REDIS_URL, {
+    ...keys,
+    maxLen: 1,
+  });
+  const now = Date.now();
+
+  try {
+    await store.append({
+      event: "rate_limited",
+      timestamp: new Date(now - 24 * 60 * 60_000 + 60_000).toISOString(),
+      data: { result: "blocked" },
+    });
+    await store.append({
+      event: "rate_limited",
+      timestamp: new Date(now + 4 * 60_000).toISOString(),
+      data: { result: "blocked" },
+    });
+
+    const lastDay = await store.countsByEventInWindow(
+      ["rate_limited"],
+      now - 24 * 60 * 60_000,
+      now,
+    );
+    assert.equal(lastDay.rate_limited, 1);
+
+    const streamSurvivors = await store.query({
+      page: 1,
+      pageSize: 10,
+    });
+    assert.equal(streamSurvivors.total, 1);
+  } finally {
+    await store.close();
+  }
+});
+
 test("redis event store backfills the window index without replacing existing entries", async (t) => {
   if (!REDIS_URL) {
     t.skip("REDIS_URL is not configured.");
@@ -310,7 +352,7 @@ test("redis event store backfills the window index without replacing existing en
   }
 });
 
-test("redis event store migrates legacy cumulative counts into a namespaced key once", async (t) => {
+test("redis event store keeps merging legacy cumulative count deltas", async (t) => {
   if (!REDIS_URL) {
     t.skip("REDIS_URL is not configured.");
     return;
@@ -318,7 +360,7 @@ test("redis event store migrates legacy cumulative counts into a namespaced key 
 
   const keys = createKeyTriplet();
   const legacyCountsKey = `${keys.countsKey}:legacy`;
-  const migrationMarkerKey = `${keys.countsKey}:legacy_migrated`;
+  const migrationSnapshotKey = `${keys.countsKey}:legacy_migrated`;
   const redis = new Redis(REDIS_URL, {
     lazyConnect: true,
     maxRetriesPerRequest: 1,
@@ -360,6 +402,16 @@ test("redis event store migrates legacy cumulative counts into a namespaced key 
         timestamp: "2026-03-26T10:08:10.000Z",
         data: { roomCode: "ROOM01", result: "ok" },
       });
+
+      await redis.hincrby(legacyCountsKey, "room_created", 2);
+      await redis.hincrby(legacyCountsKey, "rate_limited", 3);
+
+      const countsAfterLegacyWrites = await storeA.totalCountsByEvent([
+        "room_created",
+        "rate_limited",
+      ]);
+      assert.equal(countsAfterLegacyWrites.room_created, 126);
+      assert.equal(countsAfterLegacyWrites.rate_limited, 10);
     } finally {
       await storeA.close();
     }
@@ -374,8 +426,8 @@ test("redis event store migrates legacy cumulative counts into a namespaced key 
         "room_created",
         "rate_limited",
       ]);
-      assert.equal(countsAfterRestart.room_created, 124);
-      assert.equal(countsAfterRestart.rate_limited, 7);
+      assert.equal(countsAfterRestart.room_created, 126);
+      assert.equal(countsAfterRestart.rate_limited, 10);
     } finally {
       await storeB.close();
     }
@@ -384,7 +436,7 @@ test("redis event store migrates legacy cumulative counts into a namespaced key 
       keys.streamKey,
       keys.countsKey,
       legacyCountsKey,
-      migrationMarkerKey,
+      migrationSnapshotKey,
       `${keys.windowIndexKeyPrefix}:room_created`,
     );
     await redis.quit();

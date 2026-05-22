@@ -11,7 +11,6 @@ export type EventStoreQuery = GlobalEventStoreQuery;
 
 const MINUTE_MS = 60_000;
 const WINDOW_RETENTION_MS = 24 * 60 * 60_000;
-const FUTURE_TIMESTAMP_PRUNE_GRACE_MS = 5 * 60_000;
 
 type TimestampCount = {
   timestampMs: number;
@@ -62,10 +61,7 @@ function countTimestampEntriesInWindow(
 }
 
 function retentionReferenceTimestamp(timestampMs: number): number {
-  const nowMs = Date.now();
-  return timestampMs > nowMs + FUTURE_TIMESTAMP_PRUNE_GRACE_MS
-    ? nowMs
-    : timestampMs;
+  return Math.min(timestampMs, Date.now());
 }
 
 export function createEventStore(capacity = 1_000): EventStore {

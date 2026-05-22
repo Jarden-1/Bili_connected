@@ -15,28 +15,50 @@ const DEFAULT_EVENT_WINDOW_INDEX_KEY_PREFIX = "bsp:event_window_index";
 const DEFAULT_EVENT_STREAM_MAX_LEN = 1_000;
 const MINUTE_MS = 60_000;
 const WINDOW_RETENTION_MS = 24 * 60 * 60_000;
-const FUTURE_TIMESTAMP_PRUNE_GRACE_MS = 5 * 60_000;
-const LEGACY_COUNTS_MIGRATION_MARKER_SUFFIX = ":legacy_migrated";
+const LEGACY_COUNTS_MIGRATION_SNAPSHOT_SUFFIX = ":legacy_migrated";
 
-const MIGRATE_LEGACY_COUNTS_LUA = `
+const MERGE_LEGACY_COUNTS_LUA = `
 if KEYS[1] == KEYS[2] then
   return 0
 end
-if redis.call("EXISTS", KEYS[3]) == 1 then
-  return 0
+local snapshotType = redis.call("TYPE", KEYS[3]).ok
+if snapshotType == "string" then
+  local countsExists = redis.call("EXISTS", KEYS[2])
+  redis.call("DEL", KEYS[3])
+  if countsExists == 1 then
+    local seedFields = redis.call("HGETALL", KEYS[1])
+    for index = 1, #seedFields, 2 do
+      redis.call("HSET", KEYS[3], seedFields[index], seedFields[index + 1])
+    end
+    return 0
+  end
+  snapshotType = "none"
+end
+if snapshotType ~= "none" and snapshotType ~= "hash" then
+  return redis.error_reply("legacy counts migration snapshot has unsupported type")
 end
 local fields = redis.call("HGETALL", KEYS[1])
 if #fields == 0 then
   return 0
 end
+local migrated = 0
 for index = 1, #fields, 2 do
   local value = tonumber(fields[index + 1])
-  if value ~= nil and value ~= 0 then
-    redis.call("HINCRBY", KEYS[2], fields[index], value)
+  if value ~= nil then
+    local previousValue = redis.call("HGET", KEYS[3], fields[index])
+    local previous = tonumber(previousValue)
+    if previous == nil then
+      previous = 0
+    end
+    local delta = value - previous
+    if delta > 0 then
+      redis.call("HINCRBY", KEYS[2], fields[index], delta)
+      migrated = migrated + delta
+    end
+    redis.call("HSET", KEYS[3], fields[index], value)
   end
 end
-redis.call("SET", KEYS[3], "1")
-return #fields / 2
+return migrated
 `;
 
 function normalizeNullable(value: string | undefined): string | null {
@@ -92,10 +114,7 @@ function eventWindowIndexKey(prefix: string, eventName: string): string {
 }
 
 function retentionReferenceTimestamp(timestampMs: number): number {
-  const nowMs = Date.now();
-  return timestampMs > nowMs + FUTURE_TIMESTAMP_PRUNE_GRACE_MS
-    ? nowMs
-    : timestampMs;
+  return Math.min(timestampMs, Date.now());
 }
 
 function matchesQuery(
@@ -162,15 +181,20 @@ export async function createRedisEventStore(
 
   await redis.connect();
 
-  if (legacyCountsKey) {
+  async function mergeLegacyCountsIfNeeded() {
+    if (!legacyCountsKey) {
+      return;
+    }
     await redis.eval(
-      MIGRATE_LEGACY_COUNTS_LUA,
+      MERGE_LEGACY_COUNTS_LUA,
       3,
       legacyCountsKey,
       countsKey,
-      `${countsKey}${LEGACY_COUNTS_MIGRATION_MARKER_SUFFIX}`,
+      `${countsKey}${LEGACY_COUNTS_MIGRATION_SNAPSHOT_SUFFIX}`,
     );
   }
+
+  await mergeLegacyCountsIfNeeded();
 
   // Backfill cumulative counts from existing stream entries if the hash
   // does not exist yet (first startup after upgrade).
@@ -394,6 +418,7 @@ export async function createRedisEventStore(
         return {};
       }
       await pendingAppend;
+      await mergeLegacyCountsIfNeeded();
       const values = await redis.hmget(countsKey, ...eventNames);
       return Object.fromEntries(
         eventNames.map((name, i) => [

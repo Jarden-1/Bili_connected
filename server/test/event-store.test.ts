@@ -235,6 +235,36 @@ test("countsByEventInWindow ignores far-future timestamps when pruning the windo
   assert.equal(queryResult.total, 1);
 });
 
+test("countsByEventInWindow uses current time when pruning slightly future timestamps", async () => {
+  const store = createEventStore(1);
+  const now = Date.now();
+
+  await store.append({
+    event: "rate_limited",
+    timestamp: new Date(now - 24 * 60 * 60_000 + 60_000).toISOString(),
+    data: { result: "blocked" },
+  });
+  await store.append({
+    event: "rate_limited",
+    timestamp: new Date(now + 4 * 60_000).toISOString(),
+    data: { result: "blocked" },
+  });
+
+  const lastDay = await store.countsByEventInWindow(
+    ["rate_limited"],
+    now - 24 * 60 * 60_000,
+    now,
+  );
+  assert.equal(lastDay.rate_limited, 1);
+
+  const queryResult = await store.query({
+    event: "rate_limited",
+    page: 1,
+    pageSize: 10,
+  });
+  assert.equal(queryResult.total, 1);
+});
+
 test("countsByEventInWindow keeps the 24h boundary timestamp alive", async () => {
   // The 24h ms range includes an event exactly at the start boundary.
   // Retention must keep that timestamp so an inclusive query does not
