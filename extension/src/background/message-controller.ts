@@ -13,6 +13,7 @@ import type {
 } from "@bili-syncplay/protocol";
 
 type RuntimeMessage = PopupToBackgroundMessage | ContentToBackgroundMessage;
+type QueueSharedVideoResult = { ok: true } | { ok: false; error: string };
 
 export interface MessageController {
   handleRuntimeMessage(
@@ -69,7 +70,7 @@ export function createMessageController(args: {
     queueOrSendSharedVideo(
       payload: { video: SharedVideo; playback: PlaybackState | null },
       tabId: number | null,
-    ): Promise<void>;
+    ): Promise<QueueSharedVideoResult>;
   };
   tabController: {
     openSharedVideoFromPopup(): Promise<void>;
@@ -153,10 +154,16 @@ export function createMessageController(args: {
           return;
         }
         args.connectionState.lastError = null;
-        await args.shareController.queueOrSendSharedVideo(
+        const shareResult = await args.shareController.queueOrSendSharedVideo(
           response.payload,
           response.tabId,
         );
+        if (shareResult.ok === false) {
+          args.connectionState.lastError = shareResult.error;
+          args.notifyAll();
+          sendResponse({ ok: false, error: shareResult.error });
+          return;
+        }
         await args.persistState();
         args.notifyAll();
         sendResponse({ ok: true });
@@ -207,10 +214,19 @@ export function createMessageController(args: {
         }
 
         args.connectionState.lastError = null;
-        await args.shareController.queueOrSendSharedVideo(
+        const shareResult = await args.shareController.queueOrSendSharedVideo(
           response.payload,
           response.tabId,
         );
+        if (shareResult.ok === false) {
+          args.connectionState.lastError = shareResult.error;
+          args.notifyAll();
+          sendResponse({
+            ok: false,
+            error: shareResult.error,
+          } satisfies ShareCurrentVideoResponse);
+          return;
+        }
         await args.persistState();
         args.notifyAll();
         sendResponse({ ok: true } satisfies ShareCurrentVideoResponse);

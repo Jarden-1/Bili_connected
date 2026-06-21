@@ -12,6 +12,7 @@ import {
   hasPageShareButtonDragMoved,
   shareCurrentPageVideoFromContent,
 } from "../src/content/page-share-button";
+import { resolvePageShareButtonSettingsHydration } from "../src/content/page-share-button-settings";
 import { setLocaleForTests } from "../src/shared/i18n";
 
 const currentPayload: ActiveVideoResponsePayload = {
@@ -205,6 +206,27 @@ test("page share action reports background share failures", async () => {
   assert.deepEqual(harness.toastMessages, [
     "同步失败：成员令牌缺失，请重新加入房间。",
   ]);
+});
+
+test("page share button settings hydration applies valid settings responses", () => {
+  assert.deepEqual(
+    resolvePageShareButtonSettingsHydration({ ok: true, enabled: false }, 1, 6),
+    { action: "apply", enabled: false },
+  );
+});
+
+test("page share button settings hydration retries failures before giving up", () => {
+  assert.deepEqual(
+    resolvePageShareButtonSettingsHydration(
+      { ok: false, error: "booting" },
+      1,
+      6,
+    ),
+    { action: "retry" },
+  );
+  assert.deepEqual(resolvePageShareButtonSettingsHydration(null, 6, 6), {
+    action: "give-up",
+  });
 });
 
 test("page share button default position starts near the lower-right viewport", () => {

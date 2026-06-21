@@ -292,7 +292,7 @@ export function createPageShareButtonController(args: {
   let popoverStatus: HTMLParagraphElement | null = null;
   let popoverRows: HTMLDListElement | null = null;
   let popoverToggle: HTMLInputElement | null = null;
-  let enabled = true;
+  let enabled = false;
   let pending = false;
   let settingsPending = false;
   let started = false;

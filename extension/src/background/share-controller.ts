@@ -24,6 +24,8 @@ export interface ActiveVideoPayloadResult {
   error?: string;
 }
 
+export type ShareVideoResult = { ok: true } | { ok: false; error: string };
+
 export interface ShareController {
   getActiveVideoPayload(): Promise<ActiveVideoPayloadResult>;
   getVideoPayloadFromTab(
@@ -32,7 +34,7 @@ export interface ShareController {
   queueOrSendSharedVideo(
     payload: { video: SharedVideo; playback: PlaybackState | null },
     tabId: number | null,
-  ): Promise<void>;
+  ): Promise<ShareVideoResult>;
   clearPendingLocalShare(reason: string): void;
   expirePendingLocalShareIfNeeded(): void;
   setPendingLocalShare(url: string): void;
@@ -130,16 +132,16 @@ export function createShareController(args: {
   async function queueOrSendSharedVideo(
     payload: { video: SharedVideo; playback: PlaybackState | null },
     tabId: number | null,
-  ): Promise<void> {
+  ): Promise<ShareVideoResult> {
     args.rememberSharedSourceTab(tabId ?? undefined, payload.video.url);
-    setPendingLocalShare(payload.video.url);
 
     if (args.connectionState.connected && args.roomSessionState.roomCode) {
       if (!args.roomSessionState.memberToken) {
-        args.connectionState.lastError = t("popupErrorMemberTokenMissing");
-        args.notifyAll();
-        return;
+        const error = t("popupErrorMemberTokenMissing");
+        args.connectionState.lastError = error;
+        return { ok: false, error };
       }
+      setPendingLocalShare(payload.video.url);
       args.sendToServer({
         type: "video:share",
         payload: {
@@ -157,9 +159,10 @@ export function createShareController(args: {
             : {}),
         },
       });
-      return;
+      return { ok: true };
     }
 
+    setPendingLocalShare(payload.video.url);
     args.roomSessionState.pendingSharedVideo = payload.video;
     args.roomSessionState.pendingSharedPlayback = payload.playback
       ? {
@@ -172,7 +175,7 @@ export function createShareController(args: {
     if (args.roomSessionState.roomCode) {
       args.roomSessionState.memberToken = null;
       await args.connect();
-      return;
+      return { ok: true };
     }
 
     args.roomSessionState.roomCode = null;
@@ -195,6 +198,7 @@ export function createShareController(args: {
     } else {
       args.roomSessionState.pendingCreateRoom = true;
     }
+    return { ok: true };
   }
 
   function clearPendingLocalShare(reason: string): void {

@@ -30,6 +30,7 @@ function createControllerHarness(
       tabId: number | null;
       error?: string;
     };
+    queueOrSendSharedVideoResult?: { ok: true } | { ok: false; error: string };
   } = {},
 ) {
   const calls = {
@@ -148,6 +149,7 @@ function createControllerHarness(
       },
       async queueOrSendSharedVideo(payload, tabId) {
         calls.queueOrSendSharedVideo.push({ payload, tabId });
+        return overrides.queueOrSendSharedVideoResult ?? { ok: true };
       },
     },
     tabController: {
@@ -437,6 +439,43 @@ test("message controller reports content page share read failures", async () => 
   assert.deepEqual(response, {
     ok: false,
     error: "无法读取当前视频。",
+  });
+});
+
+test("message controller reports content page share send failures", async () => {
+  const harness = createControllerHarness({
+    queueOrSendSharedVideoResult: {
+      ok: false,
+      error: "成员令牌缺失，请重新加入房间。",
+    },
+  });
+  let response: unknown;
+
+  await harness.controller.handleRuntimeMessage(
+    {
+      type: "content:share-current-video",
+    },
+    {
+      tab: {
+        id: 456,
+        url: "https://www.bilibili.com/video/BV199W9zEEcH",
+      },
+    },
+    (nextResponse) => {
+      response = nextResponse;
+    },
+  );
+
+  assert.equal(
+    harness.connectionState.lastError,
+    "成员令牌缺失，请重新加入房间。",
+  );
+  assert.equal(harness.calls.queueOrSendSharedVideo.length, 1);
+  assert.equal(harness.calls.persistState, 0);
+  assert.equal(harness.calls.notifyAll, 1);
+  assert.deepEqual(response, {
+    ok: false,
+    error: "成员令牌缺失，请重新加入房间。",
   });
 });
 
