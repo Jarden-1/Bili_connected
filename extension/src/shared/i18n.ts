@@ -1,4 +1,5 @@
 import type { ErrorCode } from "@bili-syncplay/protocol";
+import { isExtensionContextInvalidatedError } from "./extension-errors";
 
 type MessageParams = Record<string, string | number | null | undefined>;
 
@@ -218,8 +219,17 @@ function interpolate(template: string, params: MessageParams = {}): string {
 }
 
 export function getUiLanguage(): string {
-  const chromeLocale =
-    typeof chrome !== "undefined" ? chrome.i18n?.getUILanguage?.() : undefined;
+  let chromeLocale: string | undefined;
+  try {
+    chromeLocale =
+      typeof chrome !== "undefined"
+        ? chrome.i18n?.getUILanguage?.()
+        : undefined;
+  } catch (error) {
+    if (!isExtensionContextInvalidatedError(error)) {
+      throw error;
+    }
+  }
   if (typeof chromeLocale === "string" && chromeLocale.trim()) {
     return chromeLocale;
   }
