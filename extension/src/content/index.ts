@@ -1,4 +1,7 @@
-import type { BackgroundToContentMessage } from "../shared/messages";
+import {
+  isPageShareButtonSettingsResponse,
+  type BackgroundToContentMessage,
+} from "../shared/messages";
 import { normalizeSharedVideoUrl } from "../shared/url";
 import { runtimeSendMessage } from "./content-messaging";
 import { createFestivalBridgeController } from "./festival-bridge";
@@ -6,6 +9,7 @@ import { startUserGestureTracking } from "./gesture-tracker";
 import { getVideoElement, pauseVideo } from "./player-binding";
 import { createContentStateStore } from "./content-store";
 import { createNavigationController } from "./navigation-controller";
+import { createPageShareButtonController } from "./page-share-button";
 import { createPlaybackBindingController } from "./playback-binding-controller";
 import { createRoomStateController } from "./room-state-controller";
 import { createShareController } from "./share-controller";
@@ -136,6 +140,12 @@ const navigationController = createNavigationController({
   activatePauseHold,
   debugLog,
 });
+const pageShareButtonController = createPageShareButtonController({
+  resolveCurrentSharePayload: () =>
+    shareController.resolveCurrentSharePayload(),
+  runtimeSendMessage,
+  toastPresenter,
+});
 
 void init();
 
@@ -167,10 +177,13 @@ async function init(): Promise<void> {
   startUserGestureTracking(() => {
     runtimeState.lastUserGestureAt = Date.now();
   });
+  pageShareButtonController.start();
+  void hydratePageShareButtonSettings();
   playbackBindingController.start();
   navigationController.start();
   window.addEventListener("pagehide", (event) => {
     if (!event.persisted) {
+      pageShareButtonController.destroy();
       syncController.destroy();
       playbackBindingController.destroy();
       navigationController.destroy();
@@ -178,6 +191,7 @@ async function init(): Promise<void> {
   });
   document.addEventListener("fullscreenchange", () => {
     toastPresenter.resetMountTarget();
+    pageShareButtonController.resetMountTarget();
   });
   void reportCurrentUser((msg) => runtimeSendMessage(msg));
 
@@ -196,6 +210,11 @@ async function init(): Promise<void> {
         return false;
       }
 
+      if (message.type === "background:page-share-button-settings") {
+        pageShareButtonController.setEnabled(message.payload.enabled);
+        return false;
+      }
+
       if (message.type === "background:get-current-video") {
         void (async () => {
           sendResponse({
@@ -211,4 +230,14 @@ async function init(): Promise<void> {
   );
 
   await syncController.hydrateRoomState();
+}
+
+async function hydratePageShareButtonSettings(): Promise<void> {
+  const response = await runtimeSendMessage<unknown>({
+    type: "content:get-page-share-button-settings",
+  });
+  if (!isPageShareButtonSettingsResponse(response) || !response.ok) {
+    return;
+  }
+  pageShareButtonController.setEnabled(response.enabled);
 }

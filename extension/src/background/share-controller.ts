@@ -26,6 +26,9 @@ export interface ActiveVideoPayloadResult {
 
 export interface ShareController {
   getActiveVideoPayload(): Promise<ActiveVideoPayloadResult>;
+  getVideoPayloadFromTab(
+    tab: Pick<chrome.tabs.Tab, "id" | "url"> | null | undefined,
+  ): Promise<ActiveVideoPayloadResult>;
   queueOrSendSharedVideo(
     payload: { video: SharedVideo; playback: PlaybackState | null },
     tabId: number | null,
@@ -72,9 +75,10 @@ export function createShareController(args: {
     return tab ?? null;
   }
 
-  async function getActiveVideoPayload(): Promise<ActiveVideoPayloadResult> {
-    const activeTab = await getActiveTab();
-    if (!activeTab?.id) {
+  async function getVideoPayloadFromTab(
+    tab: Pick<chrome.tabs.Tab, "id" | "url"> | null | undefined,
+  ): Promise<ActiveVideoPayloadResult> {
+    if (!tab?.id) {
       return {
         ok: false,
         payload: null,
@@ -83,40 +87,44 @@ export function createShareController(args: {
       };
     }
 
-    if (!activeTab.url || !parseBilibiliVideoRef(activeTab.url)) {
+    if (!tab.url || !parseBilibiliVideoRef(tab.url)) {
       return {
         ok: false,
         payload: null,
-        tabId: activeTab.id,
+        tabId: tab.id,
         error: t("popupErrorOpenBilibiliVideo"),
       };
     }
 
     try {
-      const response = await chrome.tabs.sendMessage(activeTab.id, {
+      const response = await chrome.tabs.sendMessage(tab.id, {
         type: "background:get-current-video",
       });
       if (!response?.ok || !response.payload?.video) {
         return {
           ok: false,
           payload: null,
-          tabId: activeTab.id,
+          tabId: tab.id,
           error: t("popupErrorNoPlayableVideo"),
         };
       }
       return {
         ok: true,
         payload: response.payload,
-        tabId: activeTab.id,
+        tabId: tab.id,
       };
     } catch {
       return {
         ok: false,
         payload: null,
-        tabId: activeTab.id,
+        tabId: tab.id,
         error: t("popupErrorCannotAccessPage"),
       };
     }
+  }
+
+  async function getActiveVideoPayload(): Promise<ActiveVideoPayloadResult> {
+    return getVideoPayloadFromTab(await getActiveTab());
   }
 
   async function queueOrSendSharedVideo(
@@ -240,6 +248,7 @@ export function createShareController(args: {
 
   return {
     getActiveVideoPayload,
+    getVideoPayloadFromTab,
     queueOrSendSharedVideo,
     clearPendingLocalShare,
     expirePendingLocalShareIfNeeded,
