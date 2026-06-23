@@ -397,6 +397,31 @@ test("reapplies remote stop intent when an unexpected resume happens shortly aft
   );
 });
 
+test("does not treat remote buffering as a stop intent", () => {
+  const memory = rememberRemotePlaybackForSuppression({
+    playback: createPlayback({
+      playState: "buffering",
+      currentTime: 30,
+    }),
+    normalizedUrl: "https://www.bilibili.com/video/BV1xx411c7mD?p=1",
+    now: 20_000,
+    remoteEchoSuppressionMs: 700,
+    remotePlayTransitionGuardMs: 1_800,
+  });
+
+  assert.equal(
+    hasRecentRemoteStopIntent({
+      now: 20_300,
+      pauseHoldUntil: 21_000,
+      normalizedCurrentUrl: "https://www.bilibili.com/video/BV1xx411c7mD?p=1",
+      activeSharedUrl: "https://www.bilibili.com/video/BV1xx411c7mD?p=1",
+      intendedPlayState: "buffering",
+      suppressedRemotePlayback: memory.suppressedRemotePlayback,
+    }),
+    false,
+  );
+});
+
 test("suppresses pause echo right after a remote playing intent unless it was user initiated", () => {
   const memory = rememberRemotePlaybackForSuppression({
     playback: createPlayback({

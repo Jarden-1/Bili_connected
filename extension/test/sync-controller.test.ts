@@ -58,6 +58,8 @@ function createControllerHarness() {
     remoteFollowPlayingWindowMs: 3_000,
     programmaticApplyWindowMs: 700,
     userGestureGraceMs: 300,
+    bufferPauseUpgradeMs: 1_500,
+    remotePauseDebounceMs: 0,
     nextSeq: () => 1,
     markBroadcastAt: () => {},
     getNow: () => now,
@@ -531,6 +533,57 @@ test("sync controller keeps the remote follow window through buffering and suppr
 
   assert.equal(harness.runtimeMessages.length, 0);
   assert.equal(harness.runtimeState.remoteFollowPlayingUntil > 20_900, true);
+});
+
+test("sync controller does not force-pause local playback after remote buffering", async () => {
+  const harness = createControllerHarness();
+  const sharedVideo = {
+    videoId: "BV1xx411c7mD",
+    url: "https://www.bilibili.com/video/BV1xx411c7mD?p=1",
+    title: "Video",
+  };
+  let pauseCalls = 0;
+  const video = createVideo({
+    paused: false,
+    readyState: 4,
+    currentTime: 24.04,
+    pause() {
+      pauseCalls += 1;
+    },
+  });
+
+  harness.runtimeState.hydrationReady = true;
+  harness.runtimeState.pendingRoomStateHydration = false;
+  harness.runtimeState.hasReceivedInitialRoomState = true;
+  harness.runtimeState.localMemberId = "local-member";
+  harness.runtimeState.activeRoomCode = "ROOM01";
+  harness.setSharedVideo(sharedVideo);
+  harness.setCurrentPlaybackVideo(sharedVideo);
+  harness.setVideoElement(video);
+  harness.setNow(20_000);
+
+  await harness.controller.applyRoomState(
+    createRoomState({
+      actorId: "remote-member",
+      seq: 8,
+      serverTime: 19_900,
+      currentTime: 24,
+      playState: "buffering",
+    }),
+  );
+
+  assert.equal(pauseCalls, 0);
+  assert.equal(harness.runtimeState.intendedPlayState, "buffering");
+
+  harness.setNow(20_050);
+  await harness.controller.broadcastPlayback(video, "timeupdate");
+
+  assert.equal(pauseCalls, 0);
+  assert.notEqual(harness.runtimeState.intendedPlayState, "paused");
+  assert.equal(
+    harness.debugLogs.some((message) => message.includes("remote-stop-hold")),
+    false,
+  );
 });
 
 test("sync controller allows explicit user seek inside the silence window", async () => {
