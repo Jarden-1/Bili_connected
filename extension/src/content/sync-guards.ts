@@ -460,10 +460,7 @@ export function hasRecentRemoteStopIntent(
     return false;
   }
 
-  if (
-    input.intendedPlayState === "paused" ||
-    input.intendedPlayState === "buffering"
-  ) {
+  if (input.intendedPlayState === "paused") {
     return true;
   }
 
@@ -474,10 +471,7 @@ export function hasRecentRemoteStopIntent(
     return false;
   }
 
-  return (
-    input.suppressedRemotePlayback.playState === "paused" ||
-    input.suppressedRemotePlayback.playState === "buffering"
-  );
+  return input.suppressedRemotePlayback.playState === "paused";
 }
 
 export function shouldSuppressRemotePlayTransition(
