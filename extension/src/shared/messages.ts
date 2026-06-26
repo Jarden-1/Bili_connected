@@ -36,6 +36,10 @@ export type ContentToBackgroundMessage =
   | { type: "content:get-room-state" }
   | { type: "content:get-share-context" }
   | { type: "content:share-current-video" }
+  | {
+      type: "content:auto-share-next-video";
+      payload: { previousSharedUrl: string; targetNormalizedUrl: string };
+    }
   | { type: "content:get-page-share-button-settings" }
   | { type: "content:set-page-share-button-enabled"; enabled: boolean }
   | { type: "content:debug-log"; payload: { message: string } };
@@ -130,6 +134,15 @@ export interface ShareContextResponse {
 export interface ShareCurrentVideoResponse {
   ok: boolean;
   error?: string;
+  /**
+   * Set on a retryable `{ ok: false }` auto-share response when the failure is a
+   * transient connectivity deferral (the sharer is reconnecting) rather than the
+   * page bridge not having resolved the next video yet. The content controller
+   * keeps retrying these without consuming the short page-bridge attempt budget,
+   * so a slow WebSocket reconnect does not make it give up before the room can
+   * advance.
+   */
+  deferred?: boolean;
 }
 
 export interface PageShareButtonSettingsResponse {
@@ -223,10 +236,12 @@ export function isShareCurrentVideoResponse(
   const record = value as {
     ok?: unknown;
     error?: unknown;
+    deferred?: unknown;
   };
   return (
     typeof record.ok === "boolean" &&
-    (record.error === undefined || typeof record.error === "string")
+    (record.error === undefined || typeof record.error === "string") &&
+    (record.deferred === undefined || typeof record.deferred === "boolean")
   );
 }
 

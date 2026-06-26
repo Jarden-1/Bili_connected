@@ -180,7 +180,9 @@ export function createRoomStateApplyController(args: {
   const switchActiveSharedUrlWithReset = (
     normalizedSharedUrl: string | null,
     sharedVideoUrl: string | null | undefined,
+    sharedByMemberId: string | null | undefined,
   ): void => {
+    args.runtimeState.activeSharedByMemberId = sharedByMemberId ?? null;
     if (args.runtimeState.activeSharedUrl === normalizedSharedUrl) {
       return;
     }
@@ -198,12 +200,14 @@ export function createRoomStateApplyController(args: {
     playback: PlaybackState;
     normalizedSharedUrl: string;
     sharedVideoUrl: string | null | undefined;
+    sharedByMemberId: string | null | undefined;
     roomCode: string;
     logReason: string;
   }): void => {
     switchActiveSharedUrlWithReset(
       input.normalizedSharedUrl,
       input.sharedVideoUrl,
+      input.sharedByMemberId,
     );
     args.runtimeState.intendedPlayState = input.playback.playState;
     args.runtimeState.intendedPlaybackRate = input.playback.playbackRate;
@@ -464,6 +468,10 @@ export function createRoomStateApplyController(args: {
     if (decision.kind === "empty-room") {
       args.cancelActiveSoftApply(args.getVideoElement(), "room-empty");
       args.runtimeState.activeSharedUrl = null;
+      args.runtimeState.activeSharedByMemberId = null;
+      args.runtimeState.suppressedLocalEndPauseUrl = null;
+      args.runtimeState.suppressedLocalEndPauseUntil = 0;
+      args.runtimeState.nonSharerAutoplayHoldUrl = null;
       args.clearRemoteFollowPlayingWindow();
       if (decision.acceptedHydration) {
         args.debugLog(`Accepted empty room state for ${state.roomCode}`);
@@ -475,6 +483,20 @@ export function createRoomStateApplyController(args: {
 
     if (decision.kind === "no-current-video") {
       args.cancelActiveSoftApply(args.getVideoElement(), "no-current-video");
+      // Keep the cached shared-video identity (URL *and* sharer) in sync with the
+      // room even when the page bridge briefly returns no current video (this
+      // branch otherwise returns without touching it). If the room switches from
+      // A to B during this window, a stale `activeSharedUrl` (still A) would make
+      // the navigation controller miss a later B→C autoplay
+      // (`previousNormalizedPageUrl !== activeSharedUrl`): the sharer would not
+      // auto-share C and a non-sharer would not hold, so local playback runs
+      // ahead of the room. Mirror the normal apply path's reset so both the URL
+      // and the sharer id follow the room.
+      switchActiveSharedUrlWithReset(
+        normalizedSharedUrl,
+        state.sharedVideo?.url,
+        state.sharedVideo?.sharedByMemberId,
+      );
       if (
         args.runtimeState.pendingRoomStateHydration &&
         state.playback &&
@@ -491,6 +513,7 @@ export function createRoomStateApplyController(args: {
           playback: state.playback,
           normalizedSharedUrl,
           sharedVideoUrl: state.sharedVideo?.url,
+          sharedByMemberId: state.sharedVideo?.sharedByMemberId,
           roomCode: state.roomCode,
           logReason:
             "Suppressed autoplay while waiting for page bridge during hydrate",
@@ -500,7 +523,11 @@ export function createRoomStateApplyController(args: {
       return;
     }
 
-    switchActiveSharedUrlWithReset(normalizedSharedUrl, state.sharedVideo?.url);
+    switchActiveSharedUrlWithReset(
+      normalizedSharedUrl,
+      state.sharedVideo?.url,
+      state.sharedVideo?.sharedByMemberId,
+    );
 
     if (decision.kind === "ignore-non-shared") {
       args.cancelActiveSoftApply(args.getVideoElement(), "non-shared-page");
@@ -766,6 +793,7 @@ export function createRoomStateApplyController(args: {
         switchActiveSharedUrlWithReset(
           normalizedSharedUrl,
           response.roomState.sharedVideo?.url,
+          response.roomState.sharedVideo?.sharedByMemberId,
         );
         args.runtimeState.intendedPlayState = playback.playState;
         args.runtimeState.intendedPlaybackRate = playback.playbackRate;

@@ -71,6 +71,7 @@ export interface ContentRuntimeState {
   lastLocalPlaybackVersion: { serverTime: number; seq: number } | null;
   pendingLocalPlaybackOverride: PendingLocalPlaybackOverride | null;
   activeSharedUrl: string | null;
+  activeSharedByMemberId: string | null;
   activeRoomCode: string | null;
   hydrationReady: boolean;
   hasReceivedInitialRoomState: boolean;
@@ -82,6 +83,17 @@ export interface ContentRuntimeState {
   lastUserGestureAt: number;
   lastExplicitPlaybackAction: ExplicitPlaybackAction | null;
   explicitNonSharedPlaybackUrl: string | null;
+  suppressedLocalEndPauseUrl: string | null;
+  suppressedLocalEndPauseUntil: number;
+  /**
+   * Normalized URL of a non-shared page that a non-sharer's player autoplayed
+   * into via in-SPA navigation (set by the navigation controller's non-sharer
+   * autoplay branch). The playback binding only force-pauses a gesture-less
+   * play on a non-shared page when it matches this URL, so a manually opened
+   * non-shared video reached by full-page navigation (no prior in-SPA event,
+   * hence no marker) is left playable for the user.
+   */
+  nonSharerAutoplayHoldUrl: string | null;
   lastForcedPauseAt: number;
   pauseHoldUntil: number;
   pendingPlaybackApplication: PlaybackState | null;
@@ -152,6 +164,9 @@ export function resetUserGestureState(state: ContentRuntimeState): void {
   state.lastExplicitUserAction = null;
   state.lastNonSharedGuardUrl = null;
   state.lastForcedPauseAt = 0;
+  state.suppressedLocalEndPauseUrl = null;
+  state.suppressedLocalEndPauseUntil = 0;
+  state.nonSharerAutoplayHoldUrl = null;
 }
 
 export function createContentRuntimeState(): ContentRuntimeState {
@@ -161,6 +176,7 @@ export function createContentRuntimeState(): ContentRuntimeState {
     lastLocalPlaybackVersion: null,
     pendingLocalPlaybackOverride: null,
     activeSharedUrl: null,
+    activeSharedByMemberId: null,
     activeRoomCode: null,
     hydrationReady: false,
     hasReceivedInitialRoomState: false,
@@ -172,6 +188,9 @@ export function createContentRuntimeState(): ContentRuntimeState {
     lastUserGestureAt: 0,
     lastExplicitPlaybackAction: null,
     explicitNonSharedPlaybackUrl: null,
+    suppressedLocalEndPauseUrl: null,
+    suppressedLocalEndPauseUntil: 0,
+    nonSharerAutoplayHoldUrl: null,
     lastForcedPauseAt: 0,
     pauseHoldUntil: 0,
     pendingPlaybackApplication: null,

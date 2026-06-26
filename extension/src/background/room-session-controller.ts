@@ -172,6 +172,7 @@ export function createRoomSessionController(args: {
 
   function stopWaitingForBootstrapRoomState(): void {
     waitingForBootstrapRoomState = false;
+    args.roomSessionState.awaitingFreshRoomState = false;
     bootstrapRoomStateGeneration += 1;
     if (bootstrapRoomStateTimer !== null) {
       globalThis.clearTimeout(bootstrapRoomStateTimer);
@@ -190,6 +191,12 @@ export function createRoomSessionController(args: {
     }
 
     waitingForBootstrapRoomState = false;
+    // Deliberately do NOT clear `awaitingFreshRoomState` here: this timeout only
+    // bounds how long queued member deltas wait, not the authoritative room
+    // state. If `room:state` is simply slow, releasing the guard would let a
+    // deferred auto-share send against the pre-disconnect room snapshot/member
+    // token and clobber whatever the room advanced to. Keep deferring until a
+    // real `room:state` (or room teardown) lands.
     bootstrapRoomStateTimer = null;
     const roomCode = args.roomSessionState.roomCode;
     if (!roomCode) {
@@ -246,6 +253,7 @@ export function createRoomSessionController(args: {
   function startWaitingForBootstrapRoomState(): void {
     stopWaitingForBootstrapRoomState();
     waitingForBootstrapRoomState = true;
+    args.roomSessionState.awaitingFreshRoomState = true;
     bootstrapRoomStateGeneration += 1;
     const generation = bootstrapRoomStateGeneration;
     bootstrapRoomStateTimer = globalThis.setTimeout(() => {

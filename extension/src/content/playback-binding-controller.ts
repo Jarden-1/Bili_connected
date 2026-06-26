@@ -185,6 +185,78 @@ export function createPlaybackBindingController(args: {
     );
   }
 
+  function isLocalSharedSource(): boolean {
+    return Boolean(
+      args.runtimeState.localMemberId &&
+      args.runtimeState.activeSharedByMemberId &&
+      args.runtimeState.localMemberId ===
+        args.runtimeState.activeSharedByMemberId,
+    );
+  }
+
+  function shouldHoldNonSharerAtSharedVideoEnd(): boolean {
+    if (
+      !args.runtimeState.activeRoomCode ||
+      !args.runtimeState.activeSharedUrl ||
+      !args.runtimeState.localMemberId ||
+      !args.runtimeState.activeSharedByMemberId ||
+      isLocalSharedSource()
+    ) {
+      return false;
+    }
+
+    return isCurrentVideoShared(args.getSharedVideo());
+  }
+
+  /**
+   * Hold a non-sharer paused once the shared video reaches its natural end.
+   *
+   * We intentionally wait for the real `ended` event instead of pausing a fixed
+   * margin before the end: pre-pausing stopped the non-sharer prematurely (and
+   * cut off the final frames/audio) whenever no auto-advance actually followed —
+   * e.g. Bilibili autoplay disabled or no next episode. By acting on `ended` the
+   * viewer always sees the whole video, while the armed pause hold plus the
+   * resume guard re-pause any local autoplay that continues in the same element
+   * (multi-part videos); cross-video autoplay is handled by the navigation
+   * controller.
+   */
+  function holdNonSharerAtSharedVideoEnd(video: HTMLVideoElement): boolean {
+    if (!shouldHoldNonSharerAtSharedVideoEnd()) {
+      return false;
+    }
+
+    args.runtimeState.intendedPlayState = "paused";
+    args.runtimeState.lastForcedPauseAt = nowOf();
+    args.runtimeState.suppressedLocalEndPauseUrl =
+      args.runtimeState.activeSharedUrl;
+    args.runtimeState.suppressedLocalEndPauseUntil =
+      nowOf() + args.initialRoomStatePauseHoldMs;
+    args.activatePauseHold(args.initialRoomStatePauseHoldMs);
+    args.debugLog(
+      `Held non-sharer at shared video natural end to block local autoplay-next`,
+    );
+    pauseVideo(video);
+    return true;
+  }
+
+  function shouldReapplyHoldAfterSharedVideoEnd(
+    video: HTMLVideoElement,
+    currentVideo: SharedVideo | null,
+  ): boolean {
+    return Boolean(
+      currentVideo &&
+      isCurrentVideoShared(currentVideo) &&
+      args.runtimeState.intendedPlayState !== "playing" &&
+      args.runtimeState.suppressedLocalEndPauseUrl !== null &&
+      nowOf() < args.runtimeState.suppressedLocalEndPauseUntil &&
+      args.normalizeUrl(currentVideo.url) ===
+        args.runtimeState.suppressedLocalEndPauseUrl &&
+      nowOf() - args.runtimeState.lastUserGestureAt >=
+        args.userGestureGraceMs &&
+      !video.paused,
+    );
+  }
+
   function isKnownNonSharedVideo(currentVideo: SharedVideo | null): boolean {
     const activeSharedUrl = args.runtimeState.activeSharedUrl;
     return Boolean(
@@ -395,6 +467,22 @@ export function createPlaybackBindingController(args: {
         return true;
       }
 
+      if (shouldReapplyHoldAfterSharedVideoEnd(video, currentVideo)) {
+        // The non-sharer's player resumed right after we held it at the shared
+        // video's natural end. This is local multi-part autoplay continuing in
+        // the same element (no URL change for the navigation controller to
+        // catch), so re-pause it to keep the non-sharer from running ahead of
+        // the room.
+        args.debugLog(
+          `Re-paused non-sharer multi-part autoplay after shared video natural end`,
+        );
+        args.runtimeState.lastForcedPauseAt = nowOf();
+        window.setTimeout(() => {
+          pauseVideo(video);
+        }, 0);
+        return true;
+      }
+
       if (
         currentVideo &&
         isCurrentVideoShared(currentVideo) &&
@@ -426,6 +514,38 @@ export function createPlaybackBindingController(args: {
       }
 
       if (forcePauseOnNonSharedPage(video)) {
+        // `forcePauseOnNonSharedPage` only suppresses the broadcast; it does not
+        // stop the local element. A play with a recent user gesture is the
+        // user's own non-shared playback and is left to run (broadcast still
+        // suppressed). A play with no recent gesture on a page the navigation
+        // controller flagged as a non-sharer autoplay (`nonSharerAutoplayHoldUrl`)
+        // is autoplay into the next episode: we must actually pause it, otherwise
+        // it keeps playing while the room stays on the shared video. Gate on the
+        // marker (and absence of a gesture) rather than on the pause hold still
+        // being active, because a slow SPA load/ad can delay the `play`/`playing`
+        // event past `initialRoomStatePauseHoldMs`. Requiring the marker also
+        // avoids pausing a non-shared video the user manually opened via full-page
+        // navigation (address bar/bookmark/direct link): that page was never
+        // reached through an in-SPA autoplay, so it carries no marker and is left
+        // playable.
+        const normalizedCurrentUrl = args.normalizeUrl(
+          args.getSharedVideo()?.url,
+        );
+        if (
+          !hasRecentUserGesture() &&
+          (args.runtimeState.intendedPlayState === "paused" ||
+            args.runtimeState.intendedPlayState === "buffering") &&
+          normalizedCurrentUrl !== null &&
+          normalizedCurrentUrl === args.runtimeState.nonSharerAutoplayHoldUrl
+        ) {
+          args.debugLog(
+            "Forced pause for delayed non-sharer autoplay into non-shared video",
+          );
+          args.runtimeState.lastForcedPauseAt = nowOf();
+          window.setTimeout(() => {
+            pauseVideo(video);
+          }, 0);
+        }
         return true;
       }
       if (forcePauseWhileWaitingForInitialRoomState(video)) {
@@ -450,6 +570,14 @@ export function createPlaybackBindingController(args: {
       },
       onPause: () => {
         const currentVideo = args.getSharedVideo();
+        // At a natural end the browser dispatches `pause` immediately before
+        // `ended`. Arm the non-sharer end-hold here (idempotent with the `ended`
+        // handler) and skip the broadcast: otherwise this end `pause` is sent to
+        // the room before `onEnded` establishes the suppression marker, flipping
+        // the room to paused and disrupting the sharer's autoplay-next advance.
+        if (video.ended && holdNonSharerAtSharedVideoEnd(video)) {
+          return;
+        }
         if (hasRecentUserGesture()) {
           args.cancelActiveSoftApply(video, "pause");
         }
@@ -561,6 +689,9 @@ export function createPlaybackBindingController(args: {
           rememberExplicitUserAction("ratechange");
         }
         scheduleBroadcast(video, "ratechange", 120);
+      },
+      onEnded: () => {
+        holdNonSharerAtSharedVideoEnd(video);
       },
       onTimeUpdate: () => {
         args.maintainActiveSoftApply(video);
