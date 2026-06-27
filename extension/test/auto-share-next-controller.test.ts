@@ -85,6 +85,196 @@ test("auto-share next controller sends a request after the navigation settles", 
   }
 });
 
+test("auto-share next controller re-anchors to its own confirmed previous step before sending", async () => {
+  // A→B→C chained autoplay. B is sent first (room still on A), then B→C is
+  // scheduled. B's room state confirms during C's settle window, so the live
+  // shared video is now B. C must re-anchor to B (a video this chain already
+  // sent), not the stale A, so the background stays "on-scheduled" and advances.
+  const windowHarness = installWindowStub();
+  const sentMessages: unknown[] = [];
+  let currentUrl = "https://www.bilibili.com/video/BV1BVideo";
+  let activeSharedUrl: string | null =
+    "https://www.bilibili.com/video/BV1AVideo";
+  const controller = createAutoShareNextController({
+    settleDelayMs: 900,
+    getCurrentPageUrl: () => currentUrl,
+    normalizeVideoPageUrl: normalizeTestVideoPageUrl,
+    getActiveSharedUrl: () => activeSharedUrl,
+    runtimeSendMessage: async (message) => {
+      sentMessages.push(message);
+      return { ok: true };
+    },
+    debugLog: () => {},
+  });
+
+  try {
+    // A→B: fresh chain start, sent while the room is still on A.
+    controller.scheduleForNavigation({
+      previousSharedUrl: "https://www.bilibili.com/video/BV1AVideo",
+      nextNormalizedPageUrl: "https://www.bilibili.com/video/BV1BVideo",
+      previousAutoShareTargetUrl: null,
+    });
+    windowHarness.runTimers();
+    await Promise.resolve();
+
+    // B→C: chained step, still anchored to A because B has not confirmed yet.
+    currentUrl = "https://www.bilibili.com/video/BV1CVideo";
+    controller.scheduleForNavigation({
+      previousSharedUrl: "https://www.bilibili.com/video/BV1AVideo",
+      nextNormalizedPageUrl: "https://www.bilibili.com/video/BV1CVideo",
+      previousAutoShareTargetUrl: "https://www.bilibili.com/video/BV1BVideo",
+    });
+    // B confirms during C's settle window.
+    activeSharedUrl = "https://www.bilibili.com/video/BV1BVideo";
+    windowHarness.runTimers();
+    await Promise.resolve();
+
+    assert.deepEqual(sentMessages, [
+      {
+        type: "content:auto-share-next-video",
+        payload: {
+          previousSharedUrl: "https://www.bilibili.com/video/BV1AVideo",
+          targetNormalizedUrl: "https://www.bilibili.com/video/BV1BVideo",
+        },
+      },
+      {
+        type: "content:auto-share-next-video",
+        payload: {
+          previousSharedUrl: "https://www.bilibili.com/video/BV1BVideo",
+          targetNormalizedUrl: "https://www.bilibili.com/video/BV1CVideo",
+        },
+      },
+    ]);
+  } finally {
+    currentUrl = "";
+    controller.destroy();
+    windowHarness.restore();
+  }
+});
+
+test("auto-share next controller does not re-anchor to an unrelated video the room moved to", async () => {
+  // A→B auto-share queued (no prior chain step). During the settle window the
+  // same member manually shares X from another tab and it confirms, so the live
+  // shared video is now X. X is NOT our own previous chain step, so the request
+  // must keep the scheduled anchor A — letting the background skip this stale
+  // auto-share as moved-on rather than clobber the manual X with B.
+  const windowHarness = installWindowStub();
+  const sentMessages: unknown[] = [];
+  let activeSharedUrl: string | null =
+    "https://www.bilibili.com/video/BV1AVideo";
+  const controller = createAutoShareNextController({
+    settleDelayMs: 900,
+    getCurrentPageUrl: () => "https://www.bilibili.com/video/BV1BVideo",
+    normalizeVideoPageUrl: normalizeTestVideoPageUrl,
+    getActiveSharedUrl: () => activeSharedUrl,
+    runtimeSendMessage: async (message) => {
+      sentMessages.push(message);
+      return { ok: true };
+    },
+    debugLog: () => {},
+  });
+
+  try {
+    controller.scheduleForNavigation({
+      previousSharedUrl: "https://www.bilibili.com/video/BV1AVideo",
+      nextNormalizedPageUrl: "https://www.bilibili.com/video/BV1BVideo",
+      previousAutoShareTargetUrl: null,
+    });
+    // A manual share X confirms during the settle window.
+    activeSharedUrl = "https://www.bilibili.com/video/BV1XVideo";
+    windowHarness.runTimers();
+    await Promise.resolve();
+
+    assert.deepEqual(sentMessages, [
+      {
+        type: "content:auto-share-next-video",
+        payload: {
+          previousSharedUrl: "https://www.bilibili.com/video/BV1AVideo",
+          targetNormalizedUrl: "https://www.bilibili.com/video/BV1BVideo",
+        },
+      },
+    ]);
+  } finally {
+    controller.destroy();
+    windowHarness.restore();
+  }
+});
+
+test("auto-share next controller re-anchors to an earlier sent step that confirms across deeper lag", async () => {
+  // A→B sent (room still on A). The page then rapidly advances B→C→D before B
+  // confirms, so C is superseded and only D is ultimately sent. B (not the
+  // immediately-prior page C) is the in-flight share that confirms during D's
+  // settle window. Because B was actually sent by this chain, D must still
+  // re-anchor to B — the immediately-prior target C would miss it.
+  const windowHarness = installWindowStub();
+  const sentMessages: unknown[] = [];
+  let currentUrl = "https://www.bilibili.com/video/BV1BVideo";
+  let activeSharedUrl: string | null =
+    "https://www.bilibili.com/video/BV1AVideo";
+  const controller = createAutoShareNextController({
+    settleDelayMs: 900,
+    getCurrentPageUrl: () => currentUrl,
+    normalizeVideoPageUrl: normalizeTestVideoPageUrl,
+    getActiveSharedUrl: () => activeSharedUrl,
+    runtimeSendMessage: async (message) => {
+      sentMessages.push(message);
+      return { ok: true };
+    },
+    debugLog: () => {},
+  });
+
+  try {
+    // A→B: fresh chain, sent while the room is still on A.
+    controller.scheduleForNavigation({
+      previousSharedUrl: "https://www.bilibili.com/video/BV1AVideo",
+      nextNormalizedPageUrl: "https://www.bilibili.com/video/BV1BVideo",
+      previousAutoShareTargetUrl: null,
+    });
+    windowHarness.runTimers();
+    await Promise.resolve();
+
+    // B→C then C→D before B confirms: C's pending timer is superseded by D, so
+    // only D is ever sent. Both stay anchored to A (B unconfirmed at schedule).
+    currentUrl = "https://www.bilibili.com/video/BV1CVideo";
+    controller.scheduleForNavigation({
+      previousSharedUrl: "https://www.bilibili.com/video/BV1AVideo",
+      nextNormalizedPageUrl: "https://www.bilibili.com/video/BV1CVideo",
+      previousAutoShareTargetUrl: "https://www.bilibili.com/video/BV1BVideo",
+    });
+    currentUrl = "https://www.bilibili.com/video/BV1DVideo";
+    controller.scheduleForNavigation({
+      previousSharedUrl: "https://www.bilibili.com/video/BV1AVideo",
+      nextNormalizedPageUrl: "https://www.bilibili.com/video/BV1DVideo",
+      previousAutoShareTargetUrl: "https://www.bilibili.com/video/BV1CVideo",
+    });
+    // B (the only step actually sent before D) confirms during D's settle window.
+    activeSharedUrl = "https://www.bilibili.com/video/BV1BVideo";
+    windowHarness.runTimers();
+    await Promise.resolve();
+
+    assert.deepEqual(sentMessages, [
+      {
+        type: "content:auto-share-next-video",
+        payload: {
+          previousSharedUrl: "https://www.bilibili.com/video/BV1AVideo",
+          targetNormalizedUrl: "https://www.bilibili.com/video/BV1BVideo",
+        },
+      },
+      {
+        type: "content:auto-share-next-video",
+        payload: {
+          previousSharedUrl: "https://www.bilibili.com/video/BV1BVideo",
+          targetNormalizedUrl: "https://www.bilibili.com/video/BV1DVideo",
+        },
+      },
+    ]);
+  } finally {
+    currentUrl = "";
+    controller.destroy();
+    windowHarness.restore();
+  }
+});
+
 test("auto-share next controller skips a settled request when the page moved again", async () => {
   const windowHarness = installWindowStub();
   let currentUrl = "https://www.bilibili.com/video/BV1NextVideo";

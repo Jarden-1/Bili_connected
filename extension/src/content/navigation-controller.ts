@@ -26,6 +26,14 @@ export function createNavigationController(args: {
   scheduleAutoShareNextVideo?: (input: {
     previousSharedUrl: string;
     nextNormalizedPageUrl: string;
+    /**
+     * The sharer's own in-flight auto-share target this navigation advanced FROM
+     * (the previous chain step), or `null` when this is not a chained step (it
+     * came straight from the room's confirmed shared video). A `null` value marks
+     * a fresh chain so the auto-share controller resets its sent-target lineage;
+     * a non-null value continues the current chain.
+     */
+    previousAutoShareTargetUrl: string | null;
   }) => void;
   cancelAutoShareNextVideo?: () => void;
   debugLog: (message: string) => void;
@@ -61,11 +69,19 @@ export function createNavigationController(args: {
     // intent can be transferred across a detour that auto-advances.
     const previousExplicitNonSharedPlaybackUrl =
       args.runtimeState.explicitNonSharedPlaybackUrl;
+    // The next video the local sharer auto-shared but the room has not yet
+    // confirmed (`activeSharedUrl` still lags it). Captured before the reset so a
+    // chained autoplay whose previous page is this in-flight target is still
+    // recognised as a sharer autoplay below. Re-armed only when this navigation
+    // is itself a sharer autoplay-next.
+    const previousPendingAutoShareTargetUrl =
+      args.runtimeState.pendingAutoShareTargetUrl;
     lastObservedPageUrl = nextPageUrl;
     lastObservedNormalizedPageUrl = nextNormalizedPageUrl;
     args.clearFestivalSnapshot();
     args.runtimeState.pendingPlaybackApplication = null;
     args.runtimeState.explicitNonSharedPlaybackUrl = null;
+    args.runtimeState.pendingAutoShareTargetUrl = null;
     // Any genuine navigation invalidates an auto-share scheduled by an earlier
     // autoplay. A manual detour — even one that returns to the same target — must
     // not let a stale settle timer fire and auto-share without the manual
@@ -133,9 +149,18 @@ export function createNavigationController(args: {
       // shared A, then X auto-advanced to Y), this is not the room advancing:
       // auto-sharing Y with `previousSharedUrl=A` or pausing a non-sharer's own
       // detour would both be wrong.
+      //
+      // Also accept the previous page being the sharer's own in-flight auto-share
+      // target: during chained autoplay (A→B→C) the player can advance B→C before
+      // B's `room:state` returns, so `activeSharedUrl` is still A while the page
+      // came from B. Without this the B→C step would look like a local detour and
+      // C would never be shared, stranding the room behind the sharer. (The
+      // background still defers/skips if the room is not actually behind our
+      // share, so a stale target cannot force an out-of-turn share.)
       const navigatedFromSharedVideo =
         previousNormalizedPageUrl !== null &&
-        previousNormalizedPageUrl === activeSharedUrl;
+        (previousNormalizedPageUrl === activeSharedUrl ||
+          previousNormalizedPageUrl === previousPendingAutoShareTargetUrl);
       const shouldTreatAsAutoplay =
         !hadRecentUserGesture &&
         navigatedFromSharedVideo &&
@@ -159,10 +184,35 @@ export function createNavigationController(args: {
 
       if (shouldTreatAsAutoplay && isLocalSharedSource) {
         args.runtimeState.explicitNonSharedPlaybackUrl = nextNormalizedPageUrl;
+        // Advance FROM the room's confirmed shared video (`activeSharedUrl`), not
+        // the page we navigated from. A multi-part / chained autoplay that outruns
+        // room confirmation (A→B→C→D before any `room:state` returns) can't replay
+        // the intermediate videos — once the tab moves past B/C the background's
+        // tab-resolution check rejects them — so the room must jump straight to the
+        // latest video the sharer is actually on. The auto-share controller already
+        // collapses rapid navigations to the latest target via supersede; pairing
+        // that target with the room's confirmed video as `previousSharedUrl` lets
+        // the background advance the room directly to it (room A → latest). In the
+        // normal single-step case `navigatedFromSharedVideo` guarantees
+        // `previousNormalizedPageUrl === activeSharedUrl`, so this is unchanged.
+        //
+        // `activeSharedUrl` is the anchor as of *now*. If a step our own chain
+        // already sent confirms during the settle window, the room moves to it
+        // while this anchor goes stale; the auto-share controller re-anchors to the
+        // live shared video, but only when it is one of its own sent targets — so
+        // an unrelated video the room moved to (e.g. a manual share confirmed in
+        // the same window) is never adopted and the stale auto-share is correctly
+        // skipped as moved-on. `previousPendingAutoShareTargetUrl` tells the
+        // controller whether this is a chained step (continue the lineage) or a
+        // fresh start (reset it).
         args.scheduleAutoShareNextVideo?.({
           previousSharedUrl: activeSharedUrl,
           nextNormalizedPageUrl,
+          previousAutoShareTargetUrl: previousPendingAutoShareTargetUrl,
         });
+        // Remember this target so the next chained autoplay (next → next+1) is
+        // recognised as a sharer autoplay even before the room confirms it.
+        args.runtimeState.pendingAutoShareTargetUrl = nextNormalizedPageUrl;
       } else if (shouldPauseNonSharerAutoplay) {
         args.runtimeState.intendedPlayState = "paused";
         // Mark this as a non-sharer autoplay page so the playback binding will

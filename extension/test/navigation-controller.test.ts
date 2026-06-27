@@ -207,6 +207,7 @@ test("navigation controller schedules auto-share when a shared source autoplays 
   const autoShareRequests: Array<{
     previousSharedUrl: string;
     nextNormalizedPageUrl: string;
+    previousAutoShareTargetUrl: string | null;
   }> = [];
 
   const controller = createNavigationController({
@@ -252,8 +253,93 @@ test("navigation controller schedules auto-share when a shared source autoplays 
       {
         previousSharedUrl: "https://www.bilibili.com/video/BV1DbiMBwEry",
         nextNormalizedPageUrl: "https://www.bilibili.com/video/BV1Em421N7uU",
+        // Not a chained step: no previous in-flight auto-share to re-anchor to.
+        previousAutoShareTargetUrl: null,
       },
     ]);
+  } finally {
+    windowHarness.restore();
+  }
+});
+
+test("navigation controller chains the next auto-share before the room confirms the previous one", () => {
+  const windowHarness = installWindowStub();
+  const runtimeState = createContentRuntimeState();
+  runtimeState.activeRoomCode = "ROOM01";
+  runtimeState.pendingRoomStateHydration = false;
+  runtimeState.activeSharedUrl = "https://www.bilibili.com/video/BV1aaaaaaaaa";
+  runtimeState.activeSharedByMemberId = "member-1";
+  runtimeState.localMemberId = "member-1";
+
+  let currentUrl = "https://www.bilibili.com/video/BV1aaaaaaaaa";
+  const autoShareRequests: Array<{
+    previousSharedUrl: string;
+    nextNormalizedPageUrl: string;
+    previousAutoShareTargetUrl: string | null;
+  }> = [];
+
+  const controller = createNavigationController({
+    runtimeState,
+    intervalMs: 500,
+    userGestureGraceMs: 300,
+    initialRoomStatePauseHoldMs: 1_500,
+    getCurrentPageUrl: () => currentUrl,
+    normalizeVideoPageUrl: normalizeTestVideoPageUrl,
+    isSupportedVideoPage: (url) => url.includes("/video/"),
+    clearFestivalSnapshot: () => {},
+    attachPlaybackListeners: () => {},
+    getVideoElement: () => ({ paused: false }) as HTMLVideoElement,
+    pauseVideo: () => {},
+    hydrateRoomState: async () => {},
+    activatePauseHold: () => {},
+    scheduleAutoShareNextVideo: (input) => {
+      autoShareRequests.push(input);
+    },
+    debugLog: () => {},
+    getNow: () => 10_000,
+  });
+
+  try {
+    controller.start();
+
+    // A→B autoplay: the room is on A and we own it, so this is a sharer autoplay.
+    currentUrl = "https://www.bilibili.com/video/BV1bbbbbbbbb";
+    windowHarness.intervals[0]?.();
+
+    assert.equal(
+      runtimeState.pendingAutoShareTargetUrl,
+      "https://www.bilibili.com/video/BV1bbbbbbbbb",
+    );
+
+    // B→C autoplay BEFORE B's room:state returns: `activeSharedUrl` is still A,
+    // but the previous page (B) matches the in-flight auto-share target, so this
+    // must still be recognised as a sharer autoplay and schedule C. It advances
+    // FROM the room's confirmed video (A) — not the page B — so the background can
+    // jump the room straight to the latest video the sharer is on (intermediates
+    // the tab already left cannot be replayed).
+    currentUrl = "https://www.bilibili.com/video/BV1ccccccccc";
+    windowHarness.intervals[0]?.();
+
+    assert.deepEqual(autoShareRequests, [
+      {
+        previousSharedUrl: "https://www.bilibili.com/video/BV1aaaaaaaaa",
+        nextNormalizedPageUrl: "https://www.bilibili.com/video/BV1bbbbbbbbb",
+        // First step: came straight from the room's confirmed video A.
+        previousAutoShareTargetUrl: null,
+      },
+      {
+        previousSharedUrl: "https://www.bilibili.com/video/BV1aaaaaaaaa",
+        nextNormalizedPageUrl: "https://www.bilibili.com/video/BV1ccccccccc",
+        // Chained step: came from our own in-flight auto-share target B, so the
+        // controller may re-anchor to B if it confirms during the settle window.
+        previousAutoShareTargetUrl:
+          "https://www.bilibili.com/video/BV1bbbbbbbbb",
+      },
+    ]);
+    assert.equal(
+      runtimeState.pendingAutoShareTargetUrl,
+      "https://www.bilibili.com/video/BV1ccccccccc",
+    );
   } finally {
     windowHarness.restore();
   }
