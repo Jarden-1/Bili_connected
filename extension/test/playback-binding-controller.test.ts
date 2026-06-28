@@ -2008,3 +2008,275 @@ test("playback binding controller suppresses the natural-end pause for a non-sha
     dom.restore();
   }
 });
+
+test("playback binding controller suppresses the natural-end pause broadcast for the sharer without pausing it", async () => {
+  const dom = installDomStub();
+  const runtimeState = createContentRuntimeState();
+  runtimeState.activeRoomCode = "ROOM42";
+  runtimeState.activeSharedUrl = "https://www.bilibili.com/video/BVshared";
+  runtimeState.pendingRoomStateHydration = false;
+  // The local member IS the sharer. Its own end-of-video pause must not be
+  // broadcast (it would relay a misleading "paused"/"jumped to 0:00" against the
+  // old video before the auto-share of the next video lands) — but unlike a
+  // non-sharer the sharer is NOT paused, so autoplay-next can continue.
+  runtimeState.localMemberId = "member-1";
+  runtimeState.activeSharedByMemberId = "member-1";
+  runtimeState.intendedPlayState = "playing";
+  const events: string[] = [];
+  let pauseCalls = 0;
+  const originalPause = dom.video.pause;
+
+  const controller = createPlaybackBindingController({
+    runtimeState,
+    videoBindIntervalMs: 250,
+    userGestureGraceMs: 1_200,
+    initialRoomStatePauseHoldMs: 3_000,
+    getSharedVideo: () => ({
+      videoId: "BVshared",
+      url: "https://www.bilibili.com/video/BVshared",
+      title: "Shared Video",
+      sharedByMemberId: "member-1",
+    }),
+    hasRecentRemoteStopIntent: () => false,
+    normalizeUrl: (url) => url ?? null,
+    getLastBroadcastAt: () => 0,
+    broadcastPlayback: async (_video, eventSource) => {
+      events.push(eventSource ?? "manual");
+    },
+    cancelActiveSoftApply: () => {},
+    maintainActiveSoftApply: () => {},
+    applyPendingPlaybackApplication: () => {},
+    activatePauseHold: () => {},
+    debugLog: () => {},
+    getNow: () => 5_000,
+  });
+
+  dom.video.pause = () => {
+    pauseCalls += 1;
+    dom.video.paused = true;
+    return Promise.resolve();
+  };
+
+  try {
+    controller.attachPlaybackListeners();
+    // The browser dispatches `pause` (with `ended` already true) right before
+    // `ended` at the natural end of the sharer's own shared video.
+    (dom.video as { ended?: boolean }).ended = true;
+    dom.video.paused = true;
+    dom.listeners.get("pause")?.(new Event("pause"));
+
+    await Promise.resolve();
+
+    // The end-pause is suppressed, the sharer is not force-paused, and broadcast
+    // suppression for the ended shared URL is armed for the autoplay-next handoff.
+    assert.deepEqual(events, []);
+    assert.equal(pauseCalls, 0);
+    assert.equal(runtimeState.intendedPlayState, "playing");
+    assert.equal(
+      runtimeState.sharerEndedSuppressionUrl,
+      "https://www.bilibili.com/video/BVshared",
+    );
+    assert.equal(runtimeState.sharerEndedSuppressionUntil, 8_000);
+    assert.equal(runtimeState.sharerEndedSuppressionArmedAt, 5_000);
+  } finally {
+    dom.video.pause = originalPause;
+    dom.restore();
+  }
+});
+
+test("playback binding controller flushes the sharer's terminal paused state when no autoplay-next follows", async () => {
+  const dom = installDomStub();
+  const runtimeState = createContentRuntimeState();
+  const sharedUrl = "https://www.bilibili.com/video/BVshared";
+  runtimeState.activeRoomCode = "ROOM42";
+  runtimeState.activeSharedUrl = sharedUrl;
+  runtimeState.pendingRoomStateHydration = false;
+  runtimeState.localMemberId = "member-1";
+  runtimeState.activeSharedByMemberId = "member-1";
+  runtimeState.intendedPlayState = "playing";
+  const events: string[] = [];
+  const scheduled: Array<{ cb: () => void; ms: number }> = [];
+  const originalSetTimeout = globalThis.window.setTimeout;
+  // Capture the deferred flush timer instead of letting it fire on a real clock.
+  globalThis.window.setTimeout = ((cb: () => void, ms?: number) => {
+    scheduled.push({ cb, ms: ms ?? 0 });
+    return scheduled.length;
+  }) as unknown as typeof globalThis.window.setTimeout;
+
+  const controller = createPlaybackBindingController({
+    runtimeState,
+    videoBindIntervalMs: 250,
+    userGestureGraceMs: 1_200,
+    initialRoomStatePauseHoldMs: 3_000,
+    getSharedVideo: () => ({
+      videoId: "BVshared",
+      url: sharedUrl,
+      title: "Shared Video",
+      sharedByMemberId: "member-1",
+    }),
+    hasRecentRemoteStopIntent: () => false,
+    normalizeUrl: (url) => url ?? null,
+    getLastBroadcastAt: () => 0,
+    broadcastPlayback: async (_video, eventSource) => {
+      events.push(eventSource ?? "manual");
+    },
+    cancelActiveSoftApply: () => {},
+    maintainActiveSoftApply: () => {},
+    applyPendingPlaybackApplication: () => {},
+    activatePauseHold: () => {},
+    debugLog: () => {},
+    getNow: () => 5_000,
+  });
+
+  try {
+    controller.attachPlaybackListeners();
+    (dom.video as { ended?: boolean }).ended = true;
+    dom.video.paused = true;
+    dom.listeners.get("pause")?.(new Event("pause"));
+    await Promise.resolve();
+
+    // The end-pause was suppressed and a flush timer armed.
+    assert.deepEqual(events, []);
+    const flush = scheduled.find((entry) => entry.ms === 3_000);
+    assert.ok(
+      flush,
+      "a flush timer should be scheduled for the suppression window",
+    );
+
+    // The window elapses with the player still parked at the end (no
+    // autoplay-next): the terminal paused state is flushed and the marker cleared.
+    flush?.cb();
+    await Promise.resolve();
+
+    assert.deepEqual(events, ["pause"]);
+    assert.equal(runtimeState.sharerEndedSuppressionUrl, null);
+    assert.equal(runtimeState.sharerEndedSuppressionUntil, 0);
+    assert.equal(runtimeState.sharerEndedSuppressionArmedAt, 0);
+  } finally {
+    globalThis.window.setTimeout = originalSetTimeout;
+    dom.restore();
+  }
+});
+
+test("playback binding controller does not flush a sharer end state once autoplay-next has continued", async () => {
+  const dom = installDomStub();
+  const runtimeState = createContentRuntimeState();
+  const sharedUrl = "https://www.bilibili.com/video/BVshared";
+  runtimeState.activeRoomCode = "ROOM42";
+  runtimeState.activeSharedUrl = sharedUrl;
+  runtimeState.pendingRoomStateHydration = false;
+  runtimeState.localMemberId = "member-1";
+  runtimeState.activeSharedByMemberId = "member-1";
+  runtimeState.intendedPlayState = "playing";
+  const events: string[] = [];
+  const scheduled: Array<{ cb: () => void; ms: number }> = [];
+  const originalSetTimeout = globalThis.window.setTimeout;
+  globalThis.window.setTimeout = ((cb: () => void, ms?: number) => {
+    scheduled.push({ cb, ms: ms ?? 0 });
+    return scheduled.length;
+  }) as unknown as typeof globalThis.window.setTimeout;
+
+  const controller = createPlaybackBindingController({
+    runtimeState,
+    videoBindIntervalMs: 250,
+    userGestureGraceMs: 1_200,
+    initialRoomStatePauseHoldMs: 3_000,
+    getSharedVideo: () => ({
+      videoId: "BVshared",
+      url: sharedUrl,
+      title: "Shared Video",
+      sharedByMemberId: "member-1",
+    }),
+    hasRecentRemoteStopIntent: () => false,
+    normalizeUrl: (url) => url ?? null,
+    getLastBroadcastAt: () => 0,
+    broadcastPlayback: async (_video, eventSource) => {
+      events.push(eventSource ?? "manual");
+    },
+    cancelActiveSoftApply: () => {},
+    maintainActiveSoftApply: () => {},
+    applyPendingPlaybackApplication: () => {},
+    activatePauseHold: () => {},
+    debugLog: () => {},
+    getNow: () => 5_000,
+  });
+
+  try {
+    controller.attachPlaybackListeners();
+    (dom.video as { ended?: boolean }).ended = true;
+    dom.video.paused = true;
+    dom.listeners.get("pause")?.(new Event("pause"));
+    await Promise.resolve();
+
+    const flush = scheduled.find((entry) => entry.ms === 3_000);
+    assert.ok(flush);
+
+    // Autoplay-next started: the element resumed (no longer `ended`).
+    (dom.video as { ended?: boolean }).ended = false;
+    dom.video.paused = false;
+    flush?.cb();
+    await Promise.resolve();
+
+    // No terminal pause is broadcast; the marker is just tidied.
+    assert.deepEqual(events, []);
+    assert.equal(runtimeState.sharerEndedSuppressionUrl, null);
+  } finally {
+    globalThis.window.setTimeout = originalSetTimeout;
+    dom.restore();
+  }
+});
+
+test("playback binding controller does not arm sharer end suppression for a non-sharer", async () => {
+  const dom = installDomStub();
+  const runtimeState = createContentRuntimeState();
+  runtimeState.activeRoomCode = "ROOM42";
+  runtimeState.activeSharedUrl = "https://www.bilibili.com/video/BVshared";
+  runtimeState.pendingRoomStateHydration = false;
+  runtimeState.localMemberId = "member-2";
+  runtimeState.activeSharedByMemberId = "member-1";
+  runtimeState.intendedPlayState = "playing";
+  const originalPause = dom.video.pause;
+
+  const controller = createPlaybackBindingController({
+    runtimeState,
+    videoBindIntervalMs: 250,
+    userGestureGraceMs: 1_200,
+    initialRoomStatePauseHoldMs: 3_000,
+    getSharedVideo: () => ({
+      videoId: "BVshared",
+      url: "https://www.bilibili.com/video/BVshared",
+      title: "Shared Video",
+    }),
+    hasRecentRemoteStopIntent: () => false,
+    normalizeUrl: (url) => url ?? null,
+    getLastBroadcastAt: () => 0,
+    broadcastPlayback: async () => {},
+    cancelActiveSoftApply: () => {},
+    maintainActiveSoftApply: () => {},
+    applyPendingPlaybackApplication: () => {},
+    activatePauseHold: () => {},
+    debugLog: () => {},
+    getNow: () => 5_000,
+  });
+
+  dom.video.pause = () => {
+    dom.video.paused = true;
+    return Promise.resolve();
+  };
+
+  try {
+    controller.attachPlaybackListeners();
+    (dom.video as { ended?: boolean }).ended = true;
+    dom.video.paused = true;
+    dom.listeners.get("pause")?.(new Event("pause"));
+
+    await Promise.resolve();
+
+    // The non-sharer end-hold path handles this; the sharer marker stays unset.
+    assert.equal(runtimeState.sharerEndedSuppressionUrl, null);
+    assert.equal(runtimeState.sharerEndedSuppressionUntil, 0);
+  } finally {
+    dom.video.pause = originalPause;
+    dom.restore();
+  }
+});

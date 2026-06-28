@@ -253,6 +253,9 @@ export function createSyncController(args: {
     args.runtimeState.nonSharerAutoplayHoldUrl = null;
     args.runtimeState.postNavigationAnchorSharedUrl = null;
     args.runtimeState.postNavigationAnchorSetAt = 0;
+    args.runtimeState.sharerEndedSuppressionUrl = null;
+    args.runtimeState.sharerEndedSuppressionUntil = 0;
+    args.runtimeState.sharerEndedSuppressionArmedAt = 0;
     args.debugLog(`Reset playback sync state: ${reason}`);
   }
 
@@ -733,6 +736,78 @@ export function createSyncController(args: {
       normalizedCurrentVideoUrl,
       now,
     );
+    // Sharer end-of-video handoff gate.
+    //
+    // When the local sharer's own shared video reaches its natural end, the
+    // browser emits an end `pause`, and when Bilibili autoplays the next episode
+    // into the same element before the page URL refreshes, a `seek` back to 0
+    // while the page bridge still resolves the *old* shared URL. Broadcasting
+    // either would relay a misleading "paused"/"jumped to 0:00" against the
+    // still-shared old video to every peer, moments before the auto-share of the
+    // next video lands. Suppress broadcasts for the ended shared URL until the
+    // next share confirms (which clears the marker via resetPlaybackSyncState),
+    // a fresh user gesture replays it, the page moves on to a different URL, or
+    // the bounded timeout elapses.
+    const sharerEndedUrl = args.runtimeState.sharerEndedSuppressionUrl;
+    if (sharerEndedUrl) {
+      const expired = now >= args.runtimeState.sharerEndedSuppressionUntil;
+      const movedOn = normalizedCurrentVideoUrl !== sharerEndedUrl;
+      // Only a gesture that postdates the arming counts as a fresh replay. An
+      // older gesture (the sharer dragging to the end / pressing play just
+      // before the natural end) precedes the next-episode seek-to-0 we are
+      // suppressing, so treating it as a replay would leak that seek out.
+      const userReplayed =
+        now - args.runtimeState.lastUserGestureAt < args.userGestureGraceMs &&
+        args.runtimeState.lastUserGestureAt >
+          args.runtimeState.sharerEndedSuppressionArmedAt;
+      // Once the local member is no longer the sharer of this URL (e.g. another
+      // member re-shared the same URL, which updates the sharer id without
+      // changing the URL and so does not run resetPlaybackSyncState), the
+      // suppression must release so the new sharer's takeover can be reported.
+      const ownershipLost =
+        !args.runtimeState.localMemberId ||
+        args.runtimeState.activeSharedByMemberId !==
+          args.runtimeState.localMemberId;
+      if (!expired && !movedOn && !userReplayed && !ownershipLost) {
+        if (shouldLogSuppressedBroadcastDetail(eventSource)) {
+          args.debugLog(
+            `Skip broadcast ${formatPlaybackDiagnostic({
+              actor: args.runtimeState.localMemberId,
+              playState: getPlayState(
+                video,
+                args.runtimeState.intendedPlayState,
+              ),
+              url: currentVideo.url,
+              localTime: video.currentTime,
+              targetTime: video.currentTime,
+              result: "sharer-ended-handoff",
+              extra: `endedUrl=${sharerEndedUrl}`,
+            })}`,
+          );
+        }
+        logBroadcastTrace(
+          "sharer-ended-handoff",
+          eventSource,
+          formatBroadcastTrace({
+            eventSource,
+            currentVideoUrl: currentVideo.url,
+            normalizedCurrentVideoUrl,
+            playState: getPlayState(video, args.runtimeState.intendedPlayState),
+            currentTime: video.currentTime,
+            playbackRate: video.playbackRate,
+          }),
+          normalizedCurrentVideoUrl,
+          now,
+        );
+        return;
+      }
+      args.runtimeState.sharerEndedSuppressionUrl = null;
+      args.runtimeState.sharerEndedSuppressionUntil = 0;
+      args.runtimeState.sharerEndedSuppressionArmedAt = 0;
+      args.debugLog(
+        `Cleared sharer end-of-video suppression (was ${sharerEndedUrl}, expired=${expired} movedOn=${movedOn} userReplayed=${userReplayed} ownershipLost=${ownershipLost})`,
+      );
+    }
     // Post-navigation settle gate.
     //
     // After in-room SPA navigation, the page bridge can briefly return the

@@ -60,6 +60,7 @@ export function createPlaybackBindingController(args: {
 }): PlaybackBindingController {
   let videoBindingTimer: number | null = null;
   let pauseBufferUpgradeTimerId: number | null = null;
+  let sharerEndedFlushTimerId: number | null = null;
   const nowOf = () => args.getNow?.() ?? Date.now();
   const scheduleUpgradeTimer = (cb: () => void, ms: number): number | null => {
     if (
@@ -89,6 +90,12 @@ export function createPlaybackBindingController(args: {
     if (pauseBufferUpgradeTimerId !== null) {
       cancelUpgradeTimer(pauseBufferUpgradeTimerId);
       pauseBufferUpgradeTimerId = null;
+    }
+  };
+  const clearSharerEndedFlushTimer = () => {
+    if (sharerEndedFlushTimerId !== null) {
+      cancelUpgradeTimer(sharerEndedFlushTimerId);
+      sharerEndedFlushTimerId = null;
     }
   };
   const clearActivePauseClassification = () => {
@@ -237,6 +244,90 @@ export function createPlaybackBindingController(args: {
     );
     pauseVideo(video);
     return true;
+  }
+
+  /**
+   * Arm broadcast suppression when the local *sharer's* own shared video reaches
+   * its natural end. Unlike the non-sharer hold this does not pause the player —
+   * the sharer must keep playing to autoplay into the next episode — it only
+   * stops the end `pause` (and the next-episode seek-to-0 emitted while the page
+   * URL still resolves the old video) from being broadcast as updates against
+   * the still-shared old video. Without it every peer would briefly see
+   * "{sharer} paused the video" and "{sharer} jumped to 0:00" right before the
+   * auto-share of the next video lands. The suppression is released by
+   * {@link createSyncController}'s broadcast gate once the next share confirms, a
+   * fresh user gesture replays it, the page moves on, or the timeout elapses.
+   *
+   * When no autoplay-next actually follows (the last episode, or Bilibili
+   * autoplay disabled) there is no later navigation/share/seek to drive the
+   * gate's lazy clear, so a deferred flush re-broadcasts the terminal paused
+   * state once the suppression window elapses; otherwise the room — and any
+   * new joiners — would keep seeing the shared video as still playing.
+   */
+  function armSharerSharedVideoEndSuppression(): boolean {
+    if (
+      !args.runtimeState.activeRoomCode ||
+      !args.runtimeState.activeSharedUrl ||
+      !args.runtimeState.localMemberId ||
+      !args.runtimeState.activeSharedByMemberId ||
+      !isLocalSharedSource() ||
+      !isCurrentVideoShared(args.getSharedVideo())
+    ) {
+      return false;
+    }
+
+    const armedUrl = args.runtimeState.activeSharedUrl;
+    args.runtimeState.sharerEndedSuppressionUrl = armedUrl;
+    args.runtimeState.sharerEndedSuppressionUntil =
+      nowOf() + args.initialRoomStatePauseHoldMs;
+    args.runtimeState.sharerEndedSuppressionArmedAt = nowOf();
+    clearSharerEndedFlushTimer();
+    sharerEndedFlushTimerId = scheduleUpgradeTimer(() => {
+      sharerEndedFlushTimerId = null;
+      flushSharerEndedSuppressionIfTerminal(armedUrl);
+    }, args.initialRoomStatePauseHoldMs);
+    args.debugLog(
+      `Suppressed sharer end-of-video broadcasts to keep autoplay-next handoff quiet`,
+    );
+    return true;
+  }
+
+  /**
+   * Resolve the armed sharer end-of-video suppression once its window elapses.
+   * If the marker is still set for the same shared URL and the player is still
+   * the sharer parked at the end of that video, no autoplay-next followed: clear
+   * the marker and broadcast the terminal paused state so peers and new joiners
+   * stop seeing the shared video as playing. If anything moved on (handoff,
+   * navigation, ownership change) the gate/reset already cleared it, so this is
+   * a no-op beyond tidying the marker.
+   */
+  function flushSharerEndedSuppressionIfTerminal(armedUrl: string): void {
+    if (args.runtimeState.sharerEndedSuppressionUrl !== armedUrl) {
+      return;
+    }
+    const video = getVideoElement();
+    const currentVideo = args.getSharedVideo();
+    // Require `ended` specifically: a genuine terminal end leaves the element
+    // parked at `ended`, whereas any autoplay continuation (cross-video or
+    // multi-part) clears it. This avoids flushing a spurious pause during a
+    // slow handoff where the next episode is mid-load.
+    const stillTerminalOnSameSharedVideo = Boolean(
+      video &&
+      video.ended &&
+      isLocalSharedSource() &&
+      isCurrentVideoShared(currentVideo) &&
+      args.normalizeUrl(currentVideo?.url) === armedUrl,
+    );
+    args.runtimeState.sharerEndedSuppressionUrl = null;
+    args.runtimeState.sharerEndedSuppressionUntil = 0;
+    args.runtimeState.sharerEndedSuppressionArmedAt = 0;
+    if (!video || !stillTerminalOnSameSharedVideo) {
+      return;
+    }
+    args.debugLog(
+      `Flushed sharer end-of-video paused state after no autoplay-next followed`,
+    );
+    void args.broadcastPlayback(video, "pause");
   }
 
   function shouldReapplyHoldAfterSharedVideoEnd(
@@ -578,6 +669,13 @@ export function createPlaybackBindingController(args: {
         if (video.ended && holdNonSharerAtSharedVideoEnd(video)) {
           return;
         }
+        // Same natural-end window for the sharer: do not pause (autoplay-next
+        // must continue) but suppress this end `pause` broadcast so peers are not
+        // shown a spurious "paused"/"jumped to 0:00" against the old video before
+        // the next auto-share lands. See armSharerSharedVideoEndSuppression.
+        if (video.ended && armSharerSharedVideoEndSuppression()) {
+          return;
+        }
         if (hasRecentUserGesture()) {
           args.cancelActiveSoftApply(video, "pause");
         }
@@ -691,7 +789,9 @@ export function createPlaybackBindingController(args: {
         scheduleBroadcast(video, "ratechange", 120);
       },
       onEnded: () => {
-        holdNonSharerAtSharedVideoEnd(video);
+        if (!holdNonSharerAtSharedVideoEnd(video)) {
+          armSharerSharedVideoEndSuppression();
+        }
       },
       onTimeUpdate: () => {
         args.maintainActiveSoftApply(video);
@@ -719,6 +819,7 @@ export function createPlaybackBindingController(args: {
         videoBindingTimer = null;
       }
       clearBufferUpgradeTimer();
+      clearSharerEndedFlushTimer();
     },
   };
 }
