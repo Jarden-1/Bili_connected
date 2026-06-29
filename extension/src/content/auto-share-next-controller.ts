@@ -2,6 +2,7 @@ import type {
   ContentToBackgroundMessage,
   ShareCurrentVideoResponse,
 } from "../shared/messages";
+import { isAddressBarOpaqueVideoUrl } from "./video-identity";
 
 export interface AutoShareNextController {
   scheduleForNavigation(args: {
@@ -47,6 +48,15 @@ export function createAutoShareNextController(args: {
   retryDelayMs?: number;
   getCurrentPageUrl: () => string;
   normalizeVideoPageUrl: (url: string) => string | null;
+  /**
+   * The in-player video URL resolved from the page-bridge snapshot for an
+   * address-bar-opaque (festival) page, or `null` when it has not resolved (or on
+   * non-opaque pages). Lets the pre-send self-check tell a *trustworthy* current
+   * video (the snapshot resolved a concrete `/video/...`) from the untrustworthy
+   * address-bar fallback (bare route / frozen `?bvid=`): only the latter is
+   * treated as "cannot tell". Optional; when absent the address bar is used.
+   */
+  getResolvedVideoUrl?: () => string | null;
   /**
    * The room's *currently* confirmed shared video, read fresh when a request is
    * about to be sent. Used to re-anchor `previousSharedUrl` so a chained autoplay
@@ -96,10 +106,25 @@ export function createAutoShareNextController(args: {
   }
 
   async function requestAutoShare(pending: PendingAutoShare): Promise<void> {
-    const currentNormalizedUrl = args.normalizeVideoPageUrl(
-      args.getCurrentPageUrl(),
-    );
-    if (currentNormalizedUrl !== pending.targetNormalizedUrl) {
+    const currentPageUrl = args.getCurrentPageUrl();
+    const currentNormalizedUrl = args.normalizeVideoPageUrl(currentPageUrl);
+    // Skip when the page has left the scheduled target — a manual detour during
+    // the settle window must cancel the auto-share. We treat a non-matching URL as
+    // "cannot tell" (and proceed, letting the background's authoritative, retrying
+    // tab-resolution check decide) ONLY when the current-video signal is genuinely
+    // untrustworthy: an address-bar-opaque (festival) page whose page-bridge
+    // snapshot has NOT resolved, so `getCurrentPageUrl()` fell back to the address
+    // bar (bare `/festival/<id>` route, or a frozen `?bvid=A&cid=...` normalizing
+    // to a stale `/video/A`). When the snapshot HAS resolved a concrete video
+    // (`getResolvedVideoUrl()` is non-null), that URL is trustworthy — including a
+    // manual same-page jump to another video — so a mismatch must still skip.
+    const cannotTellCurrentVideo =
+      (args.getResolvedVideoUrl?.() ?? null) === null &&
+      isAddressBarOpaqueVideoUrl(currentPageUrl);
+    if (
+      !cannotTellCurrentVideo &&
+      currentNormalizedUrl !== pending.targetNormalizedUrl
+    ) {
       args.debugLog(
         `Skipped auto-share next video because page moved from ${pending.targetNormalizedUrl} to ${currentNormalizedUrl ?? "unknown"}`,
       );

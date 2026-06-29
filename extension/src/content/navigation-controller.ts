@@ -2,7 +2,10 @@ import {
   resetUserGestureState,
   type ContentRuntimeState,
 } from "./runtime-state";
-import { isUnstableSharedVideoUrl } from "./video-identity";
+import {
+  isAddressBarOpaqueVideoUrl,
+  isUnstableSharedVideoUrl,
+} from "./video-identity";
 
 export interface NavigationController {
   start(): void;
@@ -16,6 +19,18 @@ export function createNavigationController(args: {
   initialRoomStatePauseHoldMs: number;
   getCurrentPageUrl: () => string;
   normalizeVideoPageUrl: (url: string) => string | null;
+  /**
+   * Resolves the in-player video URL for pages whose address bar does not reflect
+   * the currently playing video. Festival pages keep a fixed `/festival/<id>`
+   * route in the address bar while the player swaps videos, so `getCurrentPageUrl`
+   * never changes across an autoplay-next and the navigation watcher would never
+   * observe it. This returns the page-bridge snapshot's resolved share URL (with
+   * `bvid`/`cid`) when available, or `null` to fall back to
+   * {@link getCurrentPageUrl} (e.g. before the snapshot resolves, or on pages
+   * whose address bar already reflects the video such as `/video/` and bangumi
+   * episode pages).
+   */
+  getResolvedVideoUrl?: () => string | null;
   isSupportedVideoPage: (url: string) => boolean;
   clearFestivalSnapshot: () => void;
   attachPlaybackListeners: () => void;
@@ -40,22 +55,93 @@ export function createNavigationController(args: {
   getNow?: () => number;
 }): NavigationController {
   const nowOf = () => args.getNow?.() ?? Date.now();
+  // Compares the path portion of two page URLs (ignoring query/hash), used to
+  // tell a same-page festival autoplay from a navigation to a different page.
+  const samePathname = (a: string, b: string): boolean => {
+    try {
+      return (
+        new URL(a).pathname.replace(/\/+$/, "") ===
+        new URL(b).pathname.replace(/\/+$/, "")
+      );
+    } catch {
+      return a === b;
+    }
+  };
+  // The observed page identity: the resolved in-player video URL when available
+  // (festival pages), otherwise the address bar. Used to seed the initial
+  // baseline so a later resolution is recognised as a change.
+  const readObservedPageUrl = (): string =>
+    args.getResolvedVideoUrl?.() ?? args.getCurrentPageUrl();
   let navigationWatchTimer: number | null = null;
-  let lastObservedPageUrl = args.getCurrentPageUrl();
+  let lastObservedPageUrl = readObservedPageUrl();
   let lastObservedNormalizedPageUrl =
     args.normalizeVideoPageUrl(lastObservedPageUrl);
 
   function handlePotentialNavigation(): void {
-    const nextPageUrl = args.getCurrentPageUrl();
+    const rawPageUrl = args.getCurrentPageUrl();
+    const resolvedVideoUrl = args.getResolvedVideoUrl?.() ?? null;
+    // On an address-bar-opaque page (festival) the URL never reflects the
+    // in-player video, so the page-bridge snapshot is the only reliable identity.
+    // While it has not resolved yet — including the brief window right after a
+    // same-page autoplay clears it — defer instead of falling back to the address
+    // bar: that URL would masquerade as a navigation away from the resolved video
+    // and spuriously cancel the just-scheduled auto-share / pause it. Detect the
+    // page by its `/festival/` pathname, NOT by whether the normalized URL is
+    // unstable: a festival page opened from a share link keeps a frozen
+    // `?bvid=A&cid=...` that normalizes to a *stable* old `/video/...`, which the
+    // unstable check would miss. A real navigation to a different path is still
+    // handled immediately so autoplay there stays suppressed until room state.
+    if (
+      resolvedVideoUrl === null &&
+      args.getResolvedVideoUrl !== undefined &&
+      isAddressBarOpaqueVideoUrl(rawPageUrl) &&
+      samePathname(rawPageUrl, lastObservedPageUrl)
+    ) {
+      return;
+    }
+    const nextPageUrl = resolvedVideoUrl ?? rawPageUrl;
+    const nextNormalizedPageUrl = args.normalizeVideoPageUrl(nextPageUrl);
+
+    // The room shares THIS page by its bare (unstable) festival route — the page
+    // bridge could not resolve a `bvid`/`cid` when it was shared. Resolving it now
+    // is discovery of that share's concrete video.
+    const sharedUrlForDiscovery = args.runtimeState.activeSharedUrl;
+    const sharedIsUnstableSamePageRoute =
+      isUnstableSharedVideoUrl(sharedUrlForDiscovery) &&
+      samePathname(sharedUrlForDiscovery, nextPageUrl);
+    // The first snapshot resolution of a bare-route festival share to its concrete
+    // stable `/video/...`. Record it as the stable "from" anchor for the next
+    // same-page autoplay (`activeSharedUrl` itself stays the unstable route until
+    // the room confirms a concrete video). Computed before the no-op short-circuits
+    // below and recorded inside *each* of them — but never on the fall-through
+    // navigation path, where overwriting the anchor with the *new* video would
+    // defeat the `effectiveSharedUrl` classification of the very autoplay it is
+    // meant to enable. A festival page opened from a share link keeps a frozen
+    // `?bvid=A&cid=...`; depending on whether the resolved URL's query order
+    // matches the address bar, this discovery hits either the exact-URL no-op or
+    // the normalized no-op, so both must anchor it (otherwise the later A→B
+    // autoplay cannot be classified as the room share's autoplay and falls into
+    // hydration/pause instead of scheduling the auto-share).
+    const isBareRouteShareResolution =
+      resolvedVideoUrl !== null &&
+      nextNormalizedPageUrl !== null &&
+      !isUnstableSharedVideoUrl(nextNormalizedPageUrl) &&
+      sharedIsUnstableSamePageRoute;
+
     if (nextPageUrl === lastObservedPageUrl) {
+      if (isBareRouteShareResolution) {
+        args.runtimeState.resolvedSharedVideoUrl = nextNormalizedPageUrl;
+      }
       return;
     }
 
-    const nextNormalizedPageUrl = args.normalizeVideoPageUrl(nextPageUrl);
     if (
       nextNormalizedPageUrl !== null &&
       nextNormalizedPageUrl === lastObservedNormalizedPageUrl
     ) {
+      if (isBareRouteShareResolution) {
+        args.runtimeState.resolvedSharedVideoUrl = nextNormalizedPageUrl;
+      }
       lastObservedPageUrl = nextPageUrl;
       return;
     }
@@ -64,6 +150,58 @@ export function createNavigationController(args: {
     // Used to confirm an autoplay actually started from the room's shared video
     // rather than from a local detour the user manually navigated to.
     const previousNormalizedPageUrl = lastObservedNormalizedPageUrl;
+
+    // First concrete resolution of an unstable route (festival): the page-bridge
+    // snapshot just resolved the in-player video to a stable `/video/...` URL.
+    // This is the *discovery* of the already-playing video, not an autoplay
+    // navigation, so adopt the resolved identity silently instead of running the
+    // suppress/pause/auto-share path below — otherwise the sharer's own
+    // just-resolved video would be needlessly paused on load. Genuine festival
+    // autoplay-next transitions are stable→stable (a resolved video to another
+    // resolved video) and skip this guard, so they still schedule the auto-share.
+    // Gated on the identity coming from the snapshot (`resolvedVideoUrl`) so a
+    // bangumi season→episode navigation, whose address bar genuinely changes, is
+    // never silently swallowed here.
+    //
+    // Restricted to the discovery of a video we cannot confirm as *different* from
+    // the room's share. We can confirm "different" only against a stable, known,
+    // different shared url; treat as discovery when:
+    //   - we are not in a room (no room state governs playback), or
+    //   - the resolved video equals `activeSharedUrl`, or
+    //   - `activeSharedUrl` is itself an unstable route on this same page (e.g. a
+    //     manual share whose page bridge failed fell back to the bare
+    //     `/festival/<id>` url) — the route may well resolve to this very video,
+    //     so resolving it is discovery, not a switch.
+    // Deliberately NOT a discovery when we are in a room but `activeSharedUrl` is
+    // still null (joined but the initial `room:state` has not arrived): fall
+    // through to the in-room hydration/pause path so a festival video already
+    // playing is suppressed until the room's actual shared video is known. If the
+    // first resolution is already a confirmably different video — the shared video
+    // ended and the player auto-advanced before the snapshot resolved — likewise
+    // fall through so the sharer still schedules the auto-share and a non-sharer
+    // is still paused.
+    if (
+      resolvedVideoUrl !== null &&
+      isUnstableSharedVideoUrl(previousNormalizedPageUrl) &&
+      nextNormalizedPageUrl !== null &&
+      !isUnstableSharedVideoUrl(nextNormalizedPageUrl) &&
+      (!args.runtimeState.activeRoomCode ||
+        nextNormalizedPageUrl === sharedUrlForDiscovery ||
+        sharedIsUnstableSamePageRoute)
+    ) {
+      // Record the resolved identity of a bare-route festival share so the next
+      // same-page autoplay can use it as a stable "from" anchor (`activeSharedUrl`
+      // itself stays the unstable route until the room confirms a concrete video).
+      if (sharedIsUnstableSamePageRoute) {
+        args.runtimeState.resolvedSharedVideoUrl = nextNormalizedPageUrl;
+      }
+      lastObservedPageUrl = nextPageUrl;
+      lastObservedNormalizedPageUrl = nextNormalizedPageUrl;
+      args.debugLog(
+        `Adopted resolved video identity ${nextNormalizedPageUrl} from ${previousNormalizedPageUrl} without treating snapshot resolution as a navigation`,
+      );
+      return;
+    }
     // The local video the user was explicitly watching before this navigation
     // (if any). Captured before the reset below so an explicit local-playback
     // intent can be transferred across a detour that auto-advances.
@@ -76,12 +214,18 @@ export function createNavigationController(args: {
     // is itself a sharer autoplay-next.
     const previousPendingAutoShareTargetUrl =
       args.runtimeState.pendingAutoShareTargetUrl;
+    // The resolved identity of a bare-route festival share, captured before the
+    // reset below clears it. Used as the stable "from" anchor for a same-page
+    // autoplay off a share whose `activeSharedUrl` is still the unstable route.
+    const previousResolvedSharedVideoUrl =
+      args.runtimeState.resolvedSharedVideoUrl;
     lastObservedPageUrl = nextPageUrl;
     lastObservedNormalizedPageUrl = nextNormalizedPageUrl;
     args.clearFestivalSnapshot();
     args.runtimeState.pendingPlaybackApplication = null;
     args.runtimeState.explicitNonSharedPlaybackUrl = null;
     args.runtimeState.pendingAutoShareTargetUrl = null;
+    args.runtimeState.resolvedSharedVideoUrl = null;
     // Any genuine navigation invalidates an auto-share scheduled by an earlier
     // autoplay. A manual detour — even one that returns to the same target — must
     // not let a stale settle timer fire and auto-share without the manual
@@ -108,6 +252,16 @@ export function createNavigationController(args: {
     }
 
     const activeSharedUrl = args.runtimeState.activeSharedUrl;
+    // The stable anchor for the room's share. Normally `activeSharedUrl`, but when
+    // the room shares an address-bar-opaque *route* (a bare-route festival share),
+    // `activeSharedUrl` is unstable; fall back to the resolved identity captured
+    // for it so a same-page autoplay off that share can still be classified. The
+    // background still receives the bare `activeSharedUrl` as `previousSharedUrl`
+    // (it must match the room's stored share), so this only affects classification.
+    const effectiveSharedUrl =
+      activeSharedUrl !== null && isUnstableSharedVideoUrl(activeSharedUrl)
+        ? (previousResolvedSharedVideoUrl ?? activeSharedUrl)
+        : activeSharedUrl;
     const now = nowOf();
     // Captured before `resetUserGestureState` below zeroes it, so the
     // natural-end check can tell whether a gesture postdates the natural end.
@@ -126,11 +280,11 @@ export function createNavigationController(args: {
     //   - the shared URL is not yet known (just joined/switched room before the
     //     initial room state arrives) — the page may well be the shared video.
     const canConfirmDifferentVideo =
-      activeSharedUrl !== null &&
-      !isUnstableSharedVideoUrl(activeSharedUrl) &&
+      effectiveSharedUrl !== null &&
+      !isUnstableSharedVideoUrl(effectiveSharedUrl) &&
       nextNormalizedPageUrl !== null &&
       !isUnstableSharedVideoUrl(nextNormalizedPageUrl) &&
-      nextNormalizedPageUrl !== activeSharedUrl;
+      nextNormalizedPageUrl !== effectiveSharedUrl;
 
     // Anchor the previous shared URL so that broadcasts stay suppressed until
     // the page bridge resolves the new page to a different normalized URL or
@@ -192,10 +346,26 @@ export function createNavigationController(args: {
         args.runtimeState.sharedVideoNaturalEndUrl === activeSharedUrl &&
         now - args.runtimeState.sharedVideoNaturalEndAt <
           args.initialRoomStatePauseHoldMs;
+      // Classify as the shared video's autoplay only on *provable* evidence that
+      // the advance came from the room's shared video:
+      //   - a durable natural-end marker for it (`navigatedFromSharedVideoEnd`), or
+      //   - the previous page equals the shared anchor — either `activeSharedUrl`
+      //     directly, the resolved identity of a bare-route festival share
+      //     (`effectiveSharedUrl`), or our own in-flight chained target.
+      // We deliberately do NOT infer it from "the first resolution of this festival
+      // page landed on some different video": when the page bridge resolves a
+      // manually opened/clicked festival page slowly (past `userGestureGraceMs`, or
+      // when the navigation was not gesture-tracked), the previous identity is
+      // still the bare route and that heuristic would auto-share a manual detour
+      // (and pause non-sharers) without proof it came from the shared video. The
+      // cost is that an autoplay-next whose page bridge resolves only after the
+      // player already advanced past the shared video — and which left no natural-
+      // end marker — is not auto-shared; that ambiguous case is indistinguishable
+      // from a manual detour, so we err on the side of not hijacking the room.
       const navigatedFromSharedVideo =
         navigatedFromSharedVideoEnd ||
         (previousNormalizedPageUrl !== null &&
-          (previousNormalizedPageUrl === activeSharedUrl ||
+          (previousNormalizedPageUrl === effectiveSharedUrl ||
             previousNormalizedPageUrl === previousPendingAutoShareTargetUrl));
       // The ONLY recent gesture that should not block autoplay classification is
       // a seek-to-end: the sharer dragged to the last seconds and let the video
@@ -264,6 +434,16 @@ export function createNavigationController(args: {
         // Remember this target so the next chained autoplay (next → next+1) is
         // recognised as a sharer autoplay even before the room confirms it.
         args.runtimeState.pendingAutoShareTargetUrl = nextNormalizedPageUrl;
+        // When the room's share is still a bare festival route (its `room:state`
+        // has not yet confirmed a concrete next video), keep the resolved anchor
+        // advancing to the latest auto-shared target so a further same-page
+        // autoplay (B→C) still resolves a stable `effectiveSharedUrl` and chains.
+        if (
+          activeSharedUrl !== null &&
+          isUnstableSharedVideoUrl(activeSharedUrl)
+        ) {
+          args.runtimeState.resolvedSharedVideoUrl = nextNormalizedPageUrl;
+        }
       } else if (shouldPauseNonSharerAutoplay) {
         args.runtimeState.intendedPlayState = "paused";
         // Mark this as a non-sharer autoplay page so the playback binding will

@@ -321,6 +321,204 @@ test("auto-share next controller skips a settled request when the page moved aga
   }
 });
 
+test("auto-share next controller still sends when a festival snapshot is cleared during settle", async () => {
+  const windowHarness = installWindowStub();
+  const sentMessages: unknown[] = [];
+  // The navigation handler clears the festival snapshot before scheduling, so by
+  // the time the settle timer fires the page resolves only to the bare
+  // `/festival/<id>` route (unstable) — not the scheduled `/video/...` target.
+  function normalizeFestivalAwareUrl(url: string): string | null {
+    if (url.includes("/festival/")) {
+      const bvid = url.match(/[?&]bvid=([^&]+)/);
+      const cid = url.match(/[?&]cid=([^&]+)/);
+      if (bvid && cid) {
+        return `https://www.bilibili.com/video/${bvid[1]}?cid=${cid[1]}`;
+      }
+      return "https://www.bilibili.com/festival/MyMuji";
+    }
+    return normalizeTestVideoPageUrl(url);
+  }
+  const controller = createAutoShareNextController({
+    settleDelayMs: 900,
+    getCurrentPageUrl: () => "https://www.bilibili.com/festival/MyMuji",
+    normalizeVideoPageUrl: normalizeFestivalAwareUrl,
+    runtimeSendMessage: async (message) => {
+      sentMessages.push(message);
+      return { ok: true };
+    },
+    debugLog: () => {},
+  });
+
+  try {
+    controller.scheduleForNavigation({
+      previousSharedUrl: "https://www.bilibili.com/video/BVa?cid=1",
+      nextNormalizedPageUrl: "https://www.bilibili.com/video/BVb?cid=2",
+    });
+    windowHarness.runTimers();
+    await Promise.resolve();
+
+    // The unstable route is "cannot tell", not a confirmed move-on, so the
+    // request must be sent (the background performs the authoritative check)
+    // rather than silently dropped without a retry.
+    assert.equal(sentMessages.length, 1);
+    assert.deepEqual(sentMessages[0], {
+      type: "content:auto-share-next-video",
+      payload: {
+        previousSharedUrl: "https://www.bilibili.com/video/BVa?cid=1",
+        targetNormalizedUrl: "https://www.bilibili.com/video/BVb?cid=2",
+      },
+    });
+  } finally {
+    controller.destroy();
+    windowHarness.restore();
+  }
+});
+
+test("auto-share next controller skips when a non-festival page leaves to an unsupported page", async () => {
+  const windowHarness = installWindowStub();
+  const sentMessages: unknown[] = [];
+  const debugLogs: string[] = [];
+  // The user navigated off to a non-video page during settle: it normalizes to
+  // null. On a normal (non-opaque) page this means the page genuinely left the
+  // target, so the auto-share must be cancelled — not deferred to the background
+  // where it could still fire if the user returns within the retry window.
+  const controller = createAutoShareNextController({
+    settleDelayMs: 900,
+    getCurrentPageUrl: () => "https://www.bilibili.com/account/history",
+    normalizeVideoPageUrl: normalizeTestVideoPageUrl,
+    runtimeSendMessage: async (message) => {
+      sentMessages.push(message);
+      return { ok: true };
+    },
+    debugLog: (message) => {
+      debugLogs.push(message);
+    },
+  });
+
+  try {
+    controller.scheduleForNavigation({
+      previousSharedUrl: "https://www.bilibili.com/video/BV1OldVideo",
+      nextNormalizedPageUrl: "https://www.bilibili.com/video/BV1NextVideo",
+    });
+    windowHarness.runTimers();
+    await Promise.resolve();
+
+    assert.deepEqual(sentMessages, []);
+    assert.match(
+      debugLogs[debugLogs.length - 1],
+      /^Skipped auto-share next video because page moved /,
+    );
+  } finally {
+    controller.destroy();
+    windowHarness.restore();
+  }
+});
+
+test("auto-share next controller skips when a festival snapshot resolves a different video during settle", async () => {
+  const windowHarness = installWindowStub();
+  const sentMessages: unknown[] = [];
+  const debugLogs: string[] = [];
+  function normalizeFestivalAwareUrl(url: string): string | null {
+    if (url.includes("/festival/")) {
+      const bvid = url.match(/[?&]bvid=([^&]+)/);
+      const cid = url.match(/[?&]cid=([^&]+)/);
+      if (bvid && cid) {
+        return `https://www.bilibili.com/video/${bvid[1]}?cid=${cid[1]}`;
+      }
+      return "https://www.bilibili.com/festival/MyMuji";
+    }
+    return normalizeTestVideoPageUrl(url);
+  }
+  // The user manually jumped to another video C within the same festival page
+  // during settle. The page bridge resolved it (a trustworthy current video), so
+  // a mismatch with the target must still cancel the auto-share.
+  const resolvedUrl = "https://www.bilibili.com/festival/MyMuji?bvid=BVc&cid=3";
+  const controller = createAutoShareNextController({
+    settleDelayMs: 900,
+    getCurrentPageUrl: () => resolvedUrl,
+    getResolvedVideoUrl: () => resolvedUrl,
+    normalizeVideoPageUrl: normalizeFestivalAwareUrl,
+    runtimeSendMessage: async (message) => {
+      sentMessages.push(message);
+      return { ok: true };
+    },
+    debugLog: (message) => {
+      debugLogs.push(message);
+    },
+  });
+
+  try {
+    controller.scheduleForNavigation({
+      previousSharedUrl: "https://www.bilibili.com/video/BVa?cid=1",
+      nextNormalizedPageUrl: "https://www.bilibili.com/video/BVb?cid=2",
+    });
+    windowHarness.runTimers();
+    await Promise.resolve();
+
+    assert.deepEqual(sentMessages, []);
+    assert.match(
+      debugLogs[debugLogs.length - 1],
+      /^Skipped auto-share next video because page moved /,
+    );
+  } finally {
+    controller.destroy();
+    windowHarness.restore();
+  }
+});
+
+test("auto-share next controller still sends when a festival address bar keeps a frozen bvid", async () => {
+  const windowHarness = installWindowStub();
+  const sentMessages: unknown[] = [];
+  // Opened from a share link: after the snapshot clears, the page resolves to the
+  // frozen `?bvid=A&cid=...` which normalizes to a *stable* (but stale) /video/A.
+  function normalizeFestivalAwareUrl(url: string): string | null {
+    if (url.includes("/festival/")) {
+      const bvid = url.match(/[?&]bvid=([^&]+)/);
+      const cid = url.match(/[?&]cid=([^&]+)/);
+      if (bvid && cid) {
+        return `https://www.bilibili.com/video/${bvid[1]}?cid=${cid[1]}`;
+      }
+      return "https://www.bilibili.com/festival/MyMuji";
+    }
+    return normalizeTestVideoPageUrl(url);
+  }
+  const controller = createAutoShareNextController({
+    settleDelayMs: 900,
+    getCurrentPageUrl: () =>
+      "https://www.bilibili.com/festival/MyMuji?bvid=BVa&cid=1",
+    normalizeVideoPageUrl: normalizeFestivalAwareUrl,
+    runtimeSendMessage: async (message) => {
+      sentMessages.push(message);
+      return { ok: true };
+    },
+    debugLog: () => {},
+  });
+
+  try {
+    controller.scheduleForNavigation({
+      previousSharedUrl: "https://www.bilibili.com/video/BVa?cid=1",
+      nextNormalizedPageUrl: "https://www.bilibili.com/video/BVb?cid=2",
+    });
+    windowHarness.runTimers();
+    await Promise.resolve();
+
+    // The frozen bvid normalizes to a stable /video/BVa that differs from the
+    // target /video/BVb, but the festival address bar is untrustworthy, so the
+    // request must still be sent rather than skipped as "page moved".
+    assert.equal(sentMessages.length, 1);
+    assert.deepEqual(sentMessages[0], {
+      type: "content:auto-share-next-video",
+      payload: {
+        previousSharedUrl: "https://www.bilibili.com/video/BVa?cid=1",
+        targetNormalizedUrl: "https://www.bilibili.com/video/BVb?cid=2",
+      },
+    });
+  } finally {
+    controller.destroy();
+    windowHarness.restore();
+  }
+});
+
 test("auto-share next controller retries when the background reports the page is not ready", async () => {
   const windowHarness = installWindowStub();
   const sentMessages: unknown[] = [];

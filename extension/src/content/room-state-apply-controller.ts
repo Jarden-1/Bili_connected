@@ -182,7 +182,19 @@ export function createRoomStateApplyController(args: {
     sharedVideoUrl: string | null | undefined,
     sharedByMemberId: string | null | undefined,
   ): void => {
+    const previousSharedByMemberId = args.runtimeState.activeSharedByMemberId;
     args.runtimeState.activeSharedByMemberId = sharedByMemberId ?? null;
+    // Clear the resolved identity tracked for a bare-route festival share when the
+    // share changes owner, even if its (bare) URL is unchanged: another member
+    // re-sharing the same `/festival/<id>` route makes the previous sharer's
+    // resolved `/video/A` anchor stale. Leaving it set would let a same-page A→B
+    // autoplay be misclassified as the current room share's autoplay (wrongly
+    // pausing/holding a non-sharer). The shared-url-changed reset below covers the
+    // differing-URL case; this covers the same-URL ownership transfer that returns
+    // early before reaching it.
+    if ((sharedByMemberId ?? null) !== previousSharedByMemberId) {
+      args.runtimeState.resolvedSharedVideoUrl = null;
+    }
     // Clear the chained auto-share target once the room confirms it, or once
     // another member takes over the share: the in-flight chain marker that lets a
     // sharer schedule the next autoplay before `room:state` catches up is no
@@ -199,6 +211,9 @@ export function createRoomStateApplyController(args: {
       return;
     }
     args.runtimeState.activeSharedUrl = normalizedSharedUrl ?? null;
+    // The room moved to a different shared video, so any resolved identity tracked
+    // for a previous bare-route festival share no longer applies.
+    args.runtimeState.resolvedSharedVideoUrl = null;
     args.resetPlaybackSyncState(
       `shared url changed to ${sharedVideoUrl ?? "none"}`,
     );
@@ -482,6 +497,7 @@ export function createRoomStateApplyController(args: {
       args.runtimeState.activeSharedUrl = null;
       args.runtimeState.activeSharedByMemberId = null;
       args.runtimeState.pendingAutoShareTargetUrl = null;
+      args.runtimeState.resolvedSharedVideoUrl = null;
       args.runtimeState.suppressedLocalEndPauseUrl = null;
       args.runtimeState.suppressedLocalEndPauseUntil = 0;
       args.runtimeState.nonSharerAutoplayHoldUrl = null;

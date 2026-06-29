@@ -60,7 +60,22 @@ const shareController = createShareController({
 });
 const autoShareNextController = createAutoShareNextController({
   settleDelayMs: AUTO_SHARE_NEXT_SETTLE_DELAY_MS,
-  getCurrentPageUrl: () => window.location.href.split("#")[0],
+  // Prefer the resolved festival video so the pre-send "page still on target"
+  // check matches the scheduled `/video/...` target rather than the bare
+  // `/festival/<id>` route (which would wrongly skip the auto-share).
+  getCurrentPageUrl: () =>
+    festivalBridge.resolveVideoUrlForPage(
+      window.location.pathname,
+      FESTIVAL_SNAPSHOT_TTL_MS,
+    ) ?? window.location.href.split("#")[0],
+  // Lets the self-check distinguish a trustworthy resolved current video from the
+  // untrustworthy address-bar fallback on opaque festival pages. A snapshot older
+  // than the TTL is treated as untrustworthy so a stale target cannot be confirmed.
+  getResolvedVideoUrl: () =>
+    festivalBridge.resolveVideoUrlForPage(
+      window.location.pathname,
+      FESTIVAL_SNAPSHOT_TTL_MS,
+    ),
   normalizeVideoPageUrl: (url) => normalizeSharedVideoUrl(url),
   getActiveSharedUrl: () => runtimeState.activeSharedUrl,
   runtimeSendMessage,
@@ -139,6 +154,14 @@ const navigationController = createNavigationController({
   initialRoomStatePauseHoldMs: INITIAL_ROOM_STATE_PAUSE_HOLD_MS,
   getCurrentPageUrl: () => window.location.href.split("#")[0],
   normalizeVideoPageUrl: (url) => normalizeSharedVideoUrl(url),
+  // Festival pages keep a fixed `/festival/<id>` route in the address bar while
+  // the player swaps videos, so the navigation watcher can only observe an
+  // autoplay-next through the page-bridge snapshot's resolved share URL.
+  getResolvedVideoUrl: () =>
+    festivalBridge.resolveVideoUrlForPage(
+      window.location.pathname,
+      FESTIVAL_SNAPSHOT_TTL_MS,
+    ),
   isSupportedVideoPage: (url) => Boolean(normalizeSharedVideoUrl(url)),
   clearFestivalSnapshot: () => {
     festivalBridge.clearSnapshot();
