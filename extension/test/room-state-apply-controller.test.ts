@@ -244,10 +244,14 @@ test("clears post-navigation anchor when room becomes empty", async () => {
     "https://www.bilibili.com/bangumi/play/ep1231523";
   harness.runtimeState.postNavigationAnchorSharedUrl =
     "https://www.bilibili.com/bangumi/play/ep1231523";
+  // A non-sharer autoplay hold from this room must not survive the teardown.
+  harness.runtimeState.nonSharerAutoplayHoldUrl =
+    "https://www.bilibili.com/video/BVother?p=1";
 
   await harness.controller.applyRoomState(createEmptyRoomState());
 
   assert.equal(harness.runtimeState.postNavigationAnchorSharedUrl, null);
+  assert.equal(harness.runtimeState.nonSharerAutoplayHoldUrl, null);
 });
 
 test("syncs the cached shared url and sharer when the page bridge has no current video", async () => {

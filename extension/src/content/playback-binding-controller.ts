@@ -105,6 +105,24 @@ export function createPlaybackBindingController(args: {
   };
   const hasRecentUserGesture = () =>
     nowOf() - args.runtimeState.lastUserGestureAt < args.userGestureGraceMs;
+  // A genuine intent to control the player (pointer inside the player container
+  // or a play-toggle key), as opposed to any document-level gesture. Authorizing
+  // playback on a "load paused" non-shared page requires this stronger signal so
+  // a stray click on blank space / a popup cannot wave the page-load autoplay
+  // through.
+  const hasRecentUserGestureInPlayer = () =>
+    nowOf() - args.runtimeState.lastUserGestureInPlayerAt <
+    args.userGestureGraceMs;
+  // A FRESH in-player play intent: an in-player gesture that also postdates the
+  // last forced pause. While the page bridge resolves, the unconfirmed-context
+  // hold force-pauses (updating `lastForcedPauseAt`); the SAME click that
+  // triggered that pause must not then authorize the delayed `play`/`playing`
+  // once the bridge resolves — only a gesture made AFTER the forced pause counts
+  // as a new play intent (mirrors `shouldPreRecordNonSharedExplicitPlay`).
+  const hasFreshInPlayerPlayIntent = () =>
+    hasRecentUserGestureInPlayer() &&
+    args.runtimeState.lastUserGestureInPlayerAt >
+      args.runtimeState.lastForcedPauseAt;
   const getRecentExplicitSeekWithoutNewGestureAt = (): number | null => {
     const explicitAction = args.runtimeState.lastExplicitUserAction;
     if (
@@ -418,12 +436,11 @@ export function createPlaybackBindingController(args: {
 
   function shouldPreRecordNonSharedExplicitPlay(): boolean {
     const currentVideo = args.getSharedVideo();
-    if (
-      !hasRecentUserGesture() ||
-      args.runtimeState.lastUserGestureAt <=
-        args.runtimeState.lastForcedPauseAt ||
-      !isKnownNonSharedVideo(currentVideo)
-    ) {
+    // Require a FRESH in-player gesture (not just any document-level one, and one
+    // that postdates the forced pause): this is what authorizes manual play of a
+    // non-shared video on a load-paused page, so a stray click elsewhere followed
+    // by the page-load autoplay is not mistaken for the user pressing play.
+    if (!hasFreshInPlayerPlayIntent() || !isKnownNonSharedVideo(currentVideo)) {
       return false;
     }
 
@@ -453,6 +470,15 @@ export function createPlaybackBindingController(args: {
 
     rememberExplicitPlaybackAction("playing");
     args.runtimeState.explicitNonSharedPlaybackUrl = normalizedCurrentUrl;
+    // The user has taken control of this resolved non-shared video, so the
+    // "load paused" hold has done its job. Drop the autoplay-hold marker for it
+    // and release the pause hold so a later transient `currentVideo === null`
+    // blip (player rebuild / buffer recovery) cannot re-pause the playback the
+    // user just authorized.
+    if (args.runtimeState.nonSharerAutoplayHoldUrl === normalizedCurrentUrl) {
+      args.runtimeState.nonSharerAutoplayHoldUrl = null;
+    }
+    args.runtimeState.pauseHoldUntil = 0;
   }
 
   function forcePauseWhileWaitingForInitialRoomState(
@@ -504,6 +530,15 @@ export function createPlaybackBindingController(args: {
       return false;
     }
 
+    // While the page bridge has not yet produced `currentVideo`, every play —
+    // including one carrying a fresh user gesture — is re-paused. We cannot
+    // distinguish a real play-button press from a stray document-level gesture
+    // (the tracker records any `pointerdown`/`click`/`keydown`) followed by the
+    // page's own delayed autoplay, and there is no resolved video to anchor an
+    // authorization on. So the "load paused" hold stays in force until the bridge
+    // resolves the URL; manual play is honored only afterwards, via
+    // `preAuthorizeExplicitNonSharedPlay`, which has a concrete
+    // `isKnownNonSharedVideo` anchor.
     return hasUnconfirmedSharedVideoContext(currentVideo);
   }
 
@@ -523,7 +558,14 @@ export function createPlaybackBindingController(args: {
     const currentVideo = args.getSharedVideo();
     const normalizedCurrentUrl = args.normalizeUrl(currentVideo?.url);
     if (!currentVideo) {
-      args.runtimeState.explicitNonSharedPlaybackUrl = null;
+      // The page bridge transiently returns no current video (player rebuild /
+      // buffer recovery) without any real navigation. Do NOT clear
+      // `explicitNonSharedPlaybackUrl` here: dropping the authorization on such a
+      // blip would let a later autoplay-next off this manually-played video go
+      // unclassified by the navigation controller (no
+      // `previousExplicitNonSharedPlaybackUrl`), autoplaying the next episode. A
+      // genuine navigation clears it via the navigation reset; a manual pause
+      // clears it in `onPause`.
       return false;
     }
     if (!hasStableSharedVideoIdentity(currentVideo)) {
@@ -651,38 +693,64 @@ export function createPlaybackBindingController(args: {
         return true;
       }
 
+      // While the page bridge has not resolved `currentVideo`, a play on a held
+      // non-shared page is force-paused by
+      // `shouldReapplyPauseHoldForUnconfirmedSharedVideo` — but only while the
+      // pause hold (`pauseHoldUntil`, ~`initialRoomStatePauseHoldMs`) is still
+      // active. We deliberately do NOT keep pausing past that bound: if the bridge
+      // never produces a current video (script/ad stage stuck or bridge failure),
+      // an unbounded hold would trap the user in "load paused" forever with no way
+      // to manually play this local video. After the hold window elapses we stop
+      // forcing pause on the still-unresolved page, accepting that a late
+      // page-load autoplay may then start — that is the bounded escape hatch for a
+      // genuine manual play the user makes once the hold has expired.
+
       if (forcePauseOnNonSharedPage(video)) {
         // `forcePauseOnNonSharedPage` only suppresses the broadcast; it does not
-        // stop the local element. A play with a recent user gesture is the
+        // stop the local element. A play with a recent IN-PLAYER gesture is the
         // user's own non-shared playback and is left to run (broadcast still
-        // suppressed). A play with no recent gesture on a page the navigation
-        // controller flagged as a non-sharer autoplay (`nonSharerAutoplayHoldUrl`)
-        // is autoplay into the next episode: we must actually pause it, otherwise
-        // it keeps playing while the room stays on the shared video. Gate on the
-        // marker (and absence of a gesture) rather than on the pause hold still
-        // being active, because a slow SPA load/ad can delay the `play`/`playing`
-        // event past `initialRoomStatePauseHoldMs`. Requiring the marker also
-        // avoids pausing a non-shared video the user manually opened via full-page
-        // navigation (address bar/bookmark/direct link): that page was never
-        // reached through an in-SPA autoplay, so it carries no marker and is left
-        // playable.
+        // suppressed). A play without one on a page the navigation controller
+        // flagged as a non-sharer autoplay (`nonSharerAutoplayHoldUrl`) is
+        // autoplay into the next episode: we must actually pause it, otherwise it
+        // keeps playing while the room stays on the shared video. The gesture must
+        // be in-player (not any document-level click) so a stray click on blank
+        // space / a popup cannot leave the page-load autoplay running. Gate on the
+        // marker rather than on the pause hold still being active, because a slow
+        // SPA load/ad can delay the `play`/`playing` event past
+        // `initialRoomStatePauseHoldMs`. Requiring the marker also avoids pausing
+        // a non-shared video the user manually opened via full-page navigation
+        // (address bar/bookmark/direct link): that page was never reached through
+        // an in-SPA autoplay, so it carries no marker and is left playable.
         const normalizedCurrentUrl = args.normalizeUrl(
           args.getSharedVideo()?.url,
         );
-        if (
-          !hasRecentUserGesture() &&
+        const onHeldNonSharedPage =
           (args.runtimeState.intendedPlayState === "paused" ||
             args.runtimeState.intendedPlayState === "buffering") &&
           normalizedCurrentUrl !== null &&
-          normalizedCurrentUrl === args.runtimeState.nonSharerAutoplayHoldUrl
-        ) {
-          args.debugLog(
-            "Forced pause for delayed non-sharer autoplay into non-shared video",
-          );
-          args.runtimeState.lastForcedPauseAt = nowOf();
-          window.setTimeout(() => {
-            pauseVideo(video);
-          }, 0);
+          normalizedCurrentUrl === args.runtimeState.nonSharerAutoplayHoldUrl;
+        if (onHeldNonSharedPage) {
+          if (hasFreshInPlayerPlayIntent()) {
+            // The user genuinely pressed play in-player on this held page, so we
+            // do NOT pause it. But the pre-record path may have suppressed the
+            // authorization on the way in — e.g. a progress-restore `seeking`
+            // fired before this `play`, so `shouldPreRecordNonSharedExplicitPlay`'s
+            // seek guard returned false and `explicitNonSharedPlaybackUrl`/the hold
+            // marker were never updated. Promote it to explicit local playback and
+            // release the hold here, otherwise a later buffer recovery or a
+            // transient `currentVideo === null` blip would re-pause the playback
+            // the user just authorized, and the autoplay-next off it would lose its
+            // `previousExplicitNonSharedPlaybackUrl` classification.
+            preAuthorizeExplicitNonSharedPlay();
+          } else {
+            args.debugLog(
+              "Forced pause for delayed non-sharer autoplay into non-shared video",
+            );
+            args.runtimeState.lastForcedPauseAt = nowOf();
+            window.setTimeout(() => {
+              pauseVideo(video);
+            }, 0);
+          }
         }
         return true;
       }
@@ -780,7 +848,17 @@ export function createPlaybackBindingController(args: {
         }
         rememberExplicitPlaybackAction("paused");
         rememberExplicitUserAction("pause");
+        // Deauthorize the non-shared video the user paused — UNLESS this `pause`
+        // is the natural end of the video (the browser fires `pause` immediately
+        // before `ended`). At a natural end the player is about to autoplay the
+        // next episode; the navigation controller classifies that autoplay-next as
+        // a user-driven local navigation (load paused) via
+        // `previousExplicitNonSharedPlaybackUrl`, but it only sees the SPA URL
+        // change AFTER this handler runs. Clearing the authorization here would
+        // make that classification fail and let the next episode autoplay, so keep
+        // it until the navigation reset replaces it.
         if (
+          !video.ended &&
           currentVideo &&
           args.normalizeUrl(currentVideo.url) ===
             args.runtimeState.explicitNonSharedPlaybackUrl
