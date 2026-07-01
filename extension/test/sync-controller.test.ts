@@ -280,6 +280,7 @@ test("sync controller suppresses follow-up local broadcast after applying a late
 });
 
 test("sync controller uses rate-only reconcile for medium playing drift", async () => {
+  const windowHarness = installWindowStub();
   const harness = createControllerHarness();
   const sharedVideo = {
     videoId: "BV1xx411c7mD",
@@ -299,33 +300,68 @@ test("sync controller uses rate-only reconcile for medium playing drift", async 
   harness.setVideoElement(video);
   harness.setNow(20_000);
 
-  await harness.controller.applyRoomState(
-    createRoomState({
-      actorId: "remote-member",
-      seq: 10,
-      serverTime: 19_900,
-      currentTime: 24.8,
-      playState: "playing",
-      playbackRate: 1,
-    }),
-  );
+  try {
+    await harness.controller.applyRoomState(
+      createRoomState({
+        actorId: "remote-member",
+        seq: 10,
+        serverTime: 19_900,
+        currentTime: 24.8,
+        playState: "playing",
+        playbackRate: 1,
+      }),
+    );
 
-  assert.ok(Math.abs(video.currentTime - 24) < 0.001);
-  assert.ok(Math.abs(video.playbackRate - 1.12) < 0.001);
-  assert.equal(
-    harness.debugLogs.some(
-      (message) =>
-        message.includes("Playback reconcile") &&
-        message.includes("mode=rate-only") &&
-        message.includes("wroteTime=false") &&
-        message.includes("wroteRate=true"),
-    ),
-    true,
-  );
-  assert.equal(
-    harness.debugLogs.some((message) => message.includes("Started soft apply")),
-    false,
-  );
+    assert.ok(Math.abs(video.currentTime - 24) < 0.001);
+    assert.ok(Math.abs(video.playbackRate - 1.12) < 0.001);
+    assert.equal(
+      harness.debugLogs.some(
+        (message) =>
+          message.includes("Playback reconcile") &&
+          message.includes("mode=rate-only") &&
+          message.includes("wroteTime=false") &&
+          message.includes("wroteRate=true"),
+      ),
+      true,
+    );
+    // The rate bump must register a self-restoring session so the elevated
+    // catch-up rate cannot persist when no corrective remote update follows.
+    assert.equal(
+      harness.debugLogs.some((message) =>
+        message.includes("Started soft apply"),
+      ),
+      true,
+    );
+
+    // Reaching the stale snapshot target must NOT restore the base rate early:
+    // the remote head keeps advancing, so converging on the old target would
+    // leave residual drift. The drift (0.8s) at a 0.12x offset needs ~6.7s to
+    // close, well beyond the moment the playhead passes the snapshot target.
+    video.currentTime = 24.8;
+    harness.setNow(20_500);
+    harness.controller.maintainActiveSoftApply(video);
+    assert.ok(Math.abs(video.playbackRate - 1.12) < 0.001);
+
+    // Once enough real time has elapsed for the rate offset to absorb the drift,
+    // the base rate is restored instead of running ahead forever.
+    harness.setNow(27_500);
+    harness.controller.maintainActiveSoftApply(video);
+    assert.ok(Math.abs(video.playbackRate - 1) < 0.001);
+    assert.equal(
+      harness.debugLogs.some(
+        (message) =>
+          message.includes("Cancelled soft apply") &&
+          message.includes("result=drift-closed"),
+      ),
+      true,
+    );
+    // A rate-only catch-up must NOT arm the soft-apply cooldown, otherwise the
+    // next genuine remote reconcile would be suppressed and the residual drift
+    // would persist.
+    assert.equal(harness.runtimeState.softApplyCooldownUntil, 0);
+  } finally {
+    windowHarness.restore();
+  }
 });
 
 test("sync controller does not downgrade explicit seek under rate-only thresholds", async () => {
@@ -1939,4 +1975,167 @@ test("sync controller clears non-shared authorization on reset when no longer on
 
   assert.equal(harness.runtimeState.explicitNonSharedPlaybackUrl, null);
   assert.equal(harness.runtimeState.nonSharerAutoplayHoldUrl, null);
+});
+
+test("sync controller abandons a rate-only catch-up to broadcast a real stall with the base rate", async () => {
+  const windowHarness = installWindowStub();
+  const harness = createControllerHarness();
+  const sharedVideo = {
+    videoId: "BV1xx411c7mD",
+    url: "https://www.bilibili.com/video/BV1xx411c7mD?p=1",
+    title: "Video",
+  };
+  const video = createVideo({
+    paused: false,
+    readyState: 4,
+    currentTime: 24,
+    playbackRate: 1,
+  });
+
+  harness.runtimeState.hydrationReady = true;
+  harness.runtimeState.pendingRoomStateHydration = false;
+  harness.runtimeState.hasReceivedInitialRoomState = true;
+  harness.runtimeState.localMemberId = "local-member";
+  harness.setSharedVideo(sharedVideo);
+  harness.setCurrentPlaybackVideo(sharedVideo);
+  harness.setVideoElement(video);
+  harness.setNow(20_000);
+
+  try {
+    // A medium drift registers a pure rate-only catch-up (rate bumped to 1.12)
+    // and arms the remote-follow window by following the remote playing state.
+    await harness.controller.applyRoomState(
+      createRoomState({
+        actorId: "remote-member",
+        seq: 10,
+        serverTime: 19_900,
+        currentTime: 24.8,
+        playState: "playing",
+        playbackRate: 1,
+      }),
+    );
+    assert.ok(Math.abs(video.playbackRate - 1.12) < 0.001);
+
+    // A genuine stall interrupts the catch-up after the 700ms programmatic
+    // window (so it is not mistaken for the rate-apply echo) but well within the
+    // ~6.7s relative-drift window and the 3s remote-follow window.
+    harness.setNow(21_000);
+    video.readyState = 2;
+    await harness.controller.broadcastPlayback(video, "waiting");
+
+    assert.equal(harness.runtimeMessages.length, 1);
+    const payload = (
+      harness.runtimeMessages[0] as {
+        payload: { playState: string; playbackRate: number };
+      }
+    ).payload;
+    // The real buffering reaches peers, carrying the base rate (not 1.12), and
+    // the catch-up is abandoned (rate restored, no rate-suppress).
+    assert.equal(payload.playState, "buffering");
+    assert.ok(
+      Math.abs(payload.playbackRate - 1) < 0.001,
+      `expected base rate in payload, got ${payload.playbackRate}`,
+    );
+    assert.ok(Math.abs(video.playbackRate - 1) < 0.001);
+    assert.equal(
+      harness.debugLogs.some((message) =>
+        message.includes("Abandoned rate-only catch-up"),
+      ),
+      true,
+    );
+    assert.equal(harness.runtimeState.softApplyCooldownUntil, 0);
+  } finally {
+    windowHarness.restore();
+  }
+});
+
+test("programmatic apply signature stores the normalized url for mismatched (festival) shares", async () => {
+  const windowHarness = installWindowStub();
+  const harness = createControllerHarness();
+  // A festival/watchlater-style share whose raw url normalizes to /video/...
+  const rawUrl = "https://www.bilibili.com/festival/x?bvid=BV1xx411c7mD&cid=2";
+  const normalizedUrl = "https://www.bilibili.com/video/BV1xx411c7mD";
+  const normalizeUrl = (url: string | undefined | null) =>
+    url == null
+      ? null
+      : url.includes("bvid=BV1xx411c7mD")
+        ? normalizedUrl
+        : url;
+  const sharedVideo = {
+    videoId: "BV1xx411c7mD",
+    url: rawUrl,
+    title: "Video",
+  };
+  const video = createVideo({
+    paused: false,
+    readyState: 4,
+    currentTime: 24,
+    playbackRate: 1,
+  });
+
+  harness.runtimeState.hydrationReady = true;
+  harness.runtimeState.pendingRoomStateHydration = false;
+  harness.runtimeState.hasReceivedInitialRoomState = true;
+  harness.runtimeState.localMemberId = "local-member";
+
+  harness.controller = createSyncController({
+    runtimeState: harness.runtimeState,
+    lastAppliedVersionByActor: new Map(),
+    broadcastLogState: { key: null, at: 0 },
+    ignoredSelfPlaybackLogState: { key: null, at: 0 },
+    localIntentGuardMs: 500,
+    pauseHoldMs: 1_000,
+    initialRoomStatePauseHoldMs: 1_500,
+    remoteEchoSuppressionMs: 800,
+    remotePlayTransitionGuardMs: 500,
+    remoteFollowPlayingWindowMs: 3_000,
+    programmaticApplyWindowMs: 700,
+    userGestureGraceMs: 300,
+    bufferPauseUpgradeMs: 1_500,
+    remotePauseDebounceMs: 0,
+    nextSeq: () => 1,
+    markBroadcastAt: () => {},
+    getNow: () => 20_000,
+    debugLog: (message) => harness.debugLogs.push(message),
+    shouldLogHeartbeat: () => true,
+    runtimeSendMessage: async (message) => {
+      harness.runtimeMessages.push(message);
+      return null;
+    },
+    getHydrateRetryTimer: () => null,
+    setHydrateRetryTimer: () => {},
+    getVideoElement: () => video,
+    getCurrentPlaybackVideo: async () => sharedVideo,
+    getSharedVideo: () => sharedVideo,
+    normalizeUrl,
+    notifyRoomStateToasts: () => {},
+    maybeShowSharedVideoToast: () => {},
+  });
+
+  try {
+    await harness.controller.applyRoomState({
+      roomCode: "ROOM01",
+      sharedVideo,
+      playback: {
+        url: rawUrl,
+        currentTime: 24.8,
+        playState: "playing",
+        playbackRate: 1,
+        updatedAt: 1,
+        serverTime: 19_900,
+        actorId: "remote-member",
+        seq: 10,
+      },
+      members: [],
+    });
+
+    // The armed signature must carry the normalized url, so our own programmatic
+    // rate/seek echoes are not misclassified as genuine user actions.
+    assert.equal(
+      harness.runtimeState.programmaticApplySignature?.url,
+      normalizedUrl,
+    );
+  } finally {
+    windowHarness.restore();
+  }
 });

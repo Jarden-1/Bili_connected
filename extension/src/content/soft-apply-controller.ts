@@ -20,6 +20,10 @@ const SOFT_APPLY_TIMEOUT_PER_SECOND_MS = 900;
 const SOFT_APPLY_RTT_TIMEOUT_FACTOR = 2.5;
 const SOFT_APPLY_TARGET_SHIFT_CANCEL_THRESHOLD_SECONDS = 0.6;
 const SOFT_APPLY_COOLDOWN_MS = 2_500;
+// Bounds for the rate-only relative-drift restore window (see
+// computeRelativeDriftCloseMs).
+const RATE_ONLY_MIN_RESTORE_MS = 600;
+const RATE_ONLY_MAX_RESTORE_MS = 8_000;
 
 export interface SoftApplyController {
   cancelActiveSoftApply(video: HTMLVideoElement | null, reason: string): void;
@@ -27,6 +31,10 @@ export interface SoftApplyController {
   upsertActiveSoftApply(
     playback: PlaybackState,
     remainingDriftSeconds: number,
+    options?: {
+      armCooldownOnConverge?: boolean;
+      relativeDriftClose?: { driftSeconds: number; rateOffsetSeconds: number };
+    },
   ): void;
   shouldCancelActiveSoftApplyForPlayback(
     playback: PlaybackState | null,
@@ -37,6 +45,7 @@ export interface SoftApplyController {
     eventSource: LocalPlaybackEventSource;
     now: number;
   }): boolean;
+  isActiveRateOnlyCatchUp(normalizedUrl: string | null): boolean;
   shouldSuppressByCooldown(
     video: HTMLVideoElement,
     playback: PlaybackState,
@@ -65,6 +74,16 @@ export function createSoftApplyController(args: {
     targetTime: number;
     restorePlaybackRate: number;
     deadlineAt: number;
+    // Whether converging this session should arm the soft-apply cooldown. Only
+    // true soft-apply sessions (which seek the playhead) warrant the cooldown;
+    // a rate-only catch-up merely nudges the rate, so arming a cooldown for it
+    // would wrongly suppress the next genuine remote reconcile and leave drift.
+    armCooldownOnConverge: boolean;
+    // Rate-only sessions restore by elapsed time (the rate offset absorbing the
+    // initial drift) rather than by the playhead reaching the snapshot target:
+    // the remote head keeps advancing, so converging on the stale target would
+    // restore the base rate too early and leave residual drift behind.
+    convergeByRelativeDrift: boolean;
   } | null = null;
   let activeSoftApplyTimer: number | null = null;
 
@@ -121,7 +140,11 @@ export function createSoftApplyController(args: {
 
     const session = activeSoftApply;
     clearActiveSoftApplyState();
+    // When the user explicitly changes the playback rate, they have taken over
+    // the rate — restoring the stale snapshot rate here would silently undo
+    // their change once the session deadline elapses, so skip the restore.
     if (
+      reason !== "user-ratechange" &&
       video &&
       Math.abs(video.playbackRate - session.restorePlaybackRate) > 0.01
     ) {
@@ -136,7 +159,16 @@ export function createSoftApplyController(args: {
         "apply",
       );
     }
-    if (reason === "converged" || reason === "apply-hard-seek") {
+    if (
+      session.armCooldownOnConverge &&
+      (reason === "converged" ||
+        reason === "apply-hard-seek" ||
+        reason === "drift-closed")
+    ) {
+      // `drift-closed` is the relative-drift restore path. A pure rate-only
+      // session has armCooldownOnConverge=false so it still won't arm here, but
+      // a real soft-apply that wrote currentTime and was later re-upserted as a
+      // rate-only nudge keeps the sticky flag and must still arm the cooldown.
       armSoftApplyCooldown(session.normalizedUrl, reason);
     } else if (
       args.runtimeState.softApplyCooldownUrl === session.normalizedUrl
@@ -162,33 +194,73 @@ export function createSoftApplyController(args: {
         return;
       }
       const video = args.getVideoElement();
-      cancelActiveSoftApply(video, "timeout");
+      // Mirror maintainActiveSoftApply: a relative-drift session reaching its
+      // deadline via the timer (no timeupdate happened to fire first) must still
+      // settle through the drift-closed path so a sticky cooldown is honored.
+      cancelActiveSoftApply(
+        video,
+        activeSoftApply.convergeByRelativeDrift ? "drift-closed" : "timeout",
+      );
     }, delayMs);
+  }
+
+  // Real time needed for the rate offset to absorb the initial drift while the
+  // remote head keeps advancing: closing the *relative* drift takes
+  // drift / rateOffset seconds. Bounded so a tiny offset cannot keep the rate
+  // elevated forever and a large one still nudges for a perceptible moment.
+  function computeRelativeDriftCloseMs(input: {
+    driftSeconds: number;
+    rateOffsetSeconds: number;
+  }): number {
+    const offset = Math.max(0.01, Math.abs(input.rateOffsetSeconds));
+    const closeMs = (Math.abs(input.driftSeconds) / offset) * 1_000;
+    return Math.min(
+      RATE_ONLY_MAX_RESTORE_MS,
+      Math.max(RATE_ONLY_MIN_RESTORE_MS, Math.round(closeMs)),
+    );
   }
 
   function upsertActiveSoftApply(
     playback: PlaybackState,
     remainingDriftSeconds: number,
+    options: {
+      armCooldownOnConverge?: boolean;
+      relativeDriftClose?: { driftSeconds: number; rateOffsetSeconds: number };
+    } = {},
   ): void {
+    const armCooldownOnConverge = options.armCooldownOnConverge ?? true;
+    const convergeByRelativeDrift = options.relativeDriftClose !== undefined;
     const normalizedUrl = args.normalizeUrl(playback.url);
     if (!normalizedUrl) {
       clearActiveSoftApplyState();
       return;
     }
-    const timeoutMs = computeSoftApplyTimeoutMs(remainingDriftSeconds);
-    const restorePlaybackRate =
-      activeSoftApply && activeSoftApply.normalizedUrl === normalizedUrl
-        ? activeSoftApply.restorePlaybackRate
-        : playback.playbackRate;
+    const timeoutMs = options.relativeDriftClose
+      ? computeRelativeDriftCloseMs(options.relativeDriftClose)
+      : computeSoftApplyTimeoutMs(remainingDriftSeconds);
+    const sameSession =
+      activeSoftApply !== null &&
+      activeSoftApply.normalizedUrl === normalizedUrl;
+    const restorePlaybackRate = sameSession
+      ? activeSoftApply!.restorePlaybackRate
+      : playback.playbackRate;
+    // The cooldown flag is sticky within a session: once a real soft-apply has
+    // run on this url, keep arming the cooldown even if a later rate-only nudge
+    // re-upserts the same session.
+    const nextArmCooldownOnConverge =
+      (sameSession && activeSoftApply!.armCooldownOnConverge) ||
+      armCooldownOnConverge;
     activeSoftApply = {
       normalizedUrl,
       targetTime: playback.currentTime,
       restorePlaybackRate,
       deadlineAt: nowOf() + timeoutMs,
+      armCooldownOnConverge: nextArmCooldownOnConverge,
+      convergeByRelativeDrift,
     };
     scheduleActiveSoftApplyTimeout();
     args.debugLog(
-      `Started soft apply url=${normalizedUrl} target=${playback.currentTime.toFixed(2)} rate=${restorePlaybackRate.toFixed(2)} timeout=${timeoutMs}`,
+      `Started soft apply url=${normalizedUrl} target=${playback.currentTime.toFixed(2)} rate=${restorePlaybackRate.toFixed(2)} timeout=${timeoutMs} cooldown=${nextArmCooldownOnConverge} relativeDrift=${convergeByRelativeDrift}`,
     );
   }
 
@@ -237,7 +309,16 @@ export function createSoftApplyController(args: {
       return;
     }
     if (nowOf() >= activeSoftApply.deadlineAt) {
-      cancelActiveSoftApply(video, "timeout");
+      cancelActiveSoftApply(
+        video,
+        activeSoftApply.convergeByRelativeDrift ? "drift-closed" : "timeout",
+      );
+      return;
+    }
+    // Rate-only sessions never converge on the stale snapshot target — the
+    // remote head has moved on. They restore once the relative-drift close
+    // deadline above elapses.
+    if (activeSoftApply.convergeByRelativeDrift) {
       return;
     }
     if (
@@ -272,6 +353,23 @@ export function createSoftApplyController(args: {
     }
 
     return true;
+  }
+
+  // A *pure* rate-only catch-up session for this url: it only nudged the rate
+  // (never wrote currentTime, hence armCooldownOnConverge=false) and restores by
+  // relative drift. A genuine stall/pause during such a session is real local
+  // evidence, so the broadcast layer abandons the catch-up instead of letting it
+  // suppress / pollute the authoritative state. A session that ran a real
+  // soft-apply (sticky armCooldownOnConverge=true) is excluded: its delayed
+  // seek echoes must still be suppressed.
+  function isActiveRateOnlyCatchUp(normalizedUrl: string | null): boolean {
+    return (
+      activeSoftApply !== null &&
+      activeSoftApply.convergeByRelativeDrift &&
+      !activeSoftApply.armCooldownOnConverge &&
+      normalizedUrl !== null &&
+      normalizedUrl === activeSoftApply.normalizedUrl
+    );
   }
 
   function shouldSuppressByCooldown(
@@ -324,6 +422,7 @@ export function createSoftApplyController(args: {
     upsertActiveSoftApply,
     shouldCancelActiveSoftApplyForPlayback,
     shouldSuppressActiveSoftApplyBroadcast,
+    isActiveRateOnlyCatchUp,
     shouldSuppressByCooldown,
     clearSoftApplyCooldown,
     destroy,

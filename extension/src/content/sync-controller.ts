@@ -206,7 +206,18 @@ export function createSyncController(args: {
     reason: "pending" | "apply",
     actorId = "system",
   ): void {
-    args.runtimeState.programmaticApplySignature = signature;
+    // Normalize the signature url at the single write point so every consumer
+    // (programmatic-event guard, programmatic-paused window, programmatic
+    // ratechange detection) compares it against the equally normalized current
+    // url. The raw playback url can differ from its normalized form (e.g.
+    // festival/watchlater shares resolve to /video/...), and a mismatch would
+    // make our own programmatic rate/seek echoes look like genuine user actions.
+    const normalizedSignatureUrl =
+      args.normalizeUrl(signature.url) ?? signature.url;
+    args.runtimeState.programmaticApplySignature = {
+      ...signature,
+      url: normalizedSignatureUrl,
+    };
     args.runtimeState.programmaticApplyUntil =
       nowOf() + args.programmaticApplyWindowMs;
     args.debugLog(
@@ -283,7 +294,20 @@ export function createSyncController(args: {
         args.runtimeState.pendingPlaybackApplication = null;
       },
       onPlaybackAdjusted: (adjustment, playback) => {
-        if (adjustment.mode !== "soft-apply") {
+        // A `rate-only` catch-up that actually inflates the playback rate above
+        // the base rate must self-restore just like `soft-apply`: it bumps the
+        // rate to close drift but never writes time, so if no corrective remote
+        // update follows (e.g. the sharer keeps playing steadily after an
+        // autoplay-next), the elevated rate would otherwise persist and the
+        // playhead would run ahead forever. Registering it as an active
+        // soft-apply session lets the existing convergence/timeout machinery
+        // restore `restorePlaybackRate` once the local time catches up.
+        const isSelfRestoringRateAdjust =
+          adjustment.mode === "soft-apply" ||
+          (adjustment.mode === "rate-only" &&
+            Math.abs(adjustment.playbackRate - adjustment.restorePlaybackRate) >
+              0.01);
+        if (!isSelfRestoringRateAdjust) {
           softApply.clearSoftApplyCooldown();
         }
         args.debugLog(
@@ -295,11 +319,26 @@ export function createSyncController(args: {
             },
           )} wroteTime=${adjustment.didWriteCurrentTime} wroteRate=${adjustment.didWritePlaybackRate} targetTime=${adjustment.targetTime.toFixed(2)} appliedTime=${adjustment.currentTime.toFixed(2)} appliedRate=${adjustment.playbackRate.toFixed(2)} restoreRate=${adjustment.restorePlaybackRate.toFixed(2)}`,
         );
-        if (adjustment.mode === "soft-apply") {
-          softApply.upsertActiveSoftApply(
-            playback,
-            Math.abs(adjustment.targetTime - adjustment.currentTime),
+        if (isSelfRestoringRateAdjust) {
+          const driftSeconds = Math.abs(
+            adjustment.targetTime - adjustment.currentTime,
           );
+          const isSoftApply = adjustment.mode === "soft-apply";
+          // A rate-only catch-up only nudges the rate, so unlike a real
+          // soft-apply it must NOT arm the soft-apply cooldown (doing so would
+          // suppress the next genuine remote reconcile and leave residual drift
+          // behind), and it must restore by relative-drift closure rather than
+          // by reaching the now-stale snapshot target.
+          softApply.upsertActiveSoftApply(playback, driftSeconds, {
+            armCooldownOnConverge: isSoftApply,
+            relativeDriftClose: isSoftApply
+              ? undefined
+              : {
+                  driftSeconds,
+                  rateOffsetSeconds:
+                    adjustment.playbackRate - adjustment.restorePlaybackRate,
+                },
+          });
           return;
         }
         softApply.cancelActiveSoftApply(
@@ -1054,6 +1093,24 @@ export function createSyncController(args: {
     ) {
       args.debugLog(
         `Allowed explicit user event actor=${args.runtimeState.localMemberId ?? "local"} playState=${playState} url=${currentVideo.url} delta=n/a result=${eventSource}`,
+      );
+    }
+    // A genuine non-playing state (real stall / pause) interrupting a *pure*
+    // rate-only catch-up: abandon the catch-up before any suppression runs. This
+    // restores the base rate so the authoritative payload carries the steady
+    // rate (not the temporary catch-up rate), drops the active session so it
+    // can no longer suppress the broadcast, and clears the remote-follow window
+    // since a real local stall is positive evidence, not a follow echo. Without
+    // this the buffering/paused would be swallowed and/or leak the catch-up rate
+    // into room state.
+    if (
+      playState !== "playing" &&
+      softApply.isActiveRateOnlyCatchUp(normalizedCurrentVideoUrl)
+    ) {
+      softApply.cancelActiveSoftApply(video, "buffer-interrupt");
+      clearRemoteFollowPlayingWindow();
+      args.debugLog(
+        `Abandoned rate-only catch-up for real ${playState} url=${currentVideo.url} source=${eventSource}`,
       );
     }
     if (
