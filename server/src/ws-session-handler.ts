@@ -17,6 +17,7 @@ import {
   INVALID_JSON_MESSAGE,
 } from "./messages.js";
 import type { RuntimeStore } from "./runtime-store.js";
+import type { WsHeartbeat } from "./ws-heartbeat.js";
 
 const CLOSE_CODE_POLICY_VIOLATION = 1008;
 
@@ -189,6 +190,7 @@ export function createWsConnectionHandler(args: {
   logEvent: LogEvent;
   pendingSessionCleanup: Set<Promise<void>>;
   messageQueueDrainTimeoutMs?: number;
+  wsHeartbeat?: Pick<WsHeartbeat, "track">;
 }): (socket: WebSocket, request: IncomingMessage) => void {
   const drainTimeoutMs = args.messageQueueDrainTimeoutMs ?? 10_000;
   return (socket, request) => {
@@ -217,6 +219,7 @@ export function createWsConnectionHandler(args: {
 
     args.securityPolicy.incrementConnectionCount(session.remoteAddress);
     args.runtimeStore.registerSession(session);
+    args.wsHeartbeat?.track(socket, session);
     args.logEvent("ws_connection_accepted", {
       sessionId: session.id,
       remoteAddress: session.remoteAddress,
