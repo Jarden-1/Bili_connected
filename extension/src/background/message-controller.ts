@@ -697,6 +697,22 @@ export function createMessageController(args: {
           displayName: args.roomSessionState.displayName,
         });
         return;
+      case "content:room-chat":
+        if (
+          args.connectionState.connected &&
+          args.roomSessionState.roomCode &&
+          args.roomSessionState.memberToken
+        ) {
+          args.sendToServer({
+            type: "room:chat",
+            payload: {
+              memberToken: args.roomSessionState.memberToken,
+              text: message.text,
+            },
+          });
+        }
+        sendResponse({ ok: true });
+        return;
       case "content:debug-log":
         args.diagnosticsController.log(
           "content",

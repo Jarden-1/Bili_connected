@@ -60,6 +60,16 @@ export interface SyncPongMessage {
   };
 }
 
+export interface RoomChatBroadcastMessage {
+  type: "room:chat";
+  payload: {
+    roomCode: RoomCode;
+    member: RoomMember;
+    text: string;
+    timestamp: number;
+  };
+}
+
 export type ServerMessage =
   | RoomCreatedMessage
   | RoomJoinedMessage
@@ -67,4 +77,5 @@ export type ServerMessage =
   | RoomMemberJoinedMessage
   | RoomMemberLeftMessage
   | ErrorMessage
-  | SyncPongMessage;
+  | SyncPongMessage
+  | RoomChatBroadcastMessage;

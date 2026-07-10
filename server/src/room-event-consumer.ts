@@ -128,6 +128,32 @@ export async function createRoomEventConsumer(options: {
         return;
       }
 
+      if (message.type === "room_chat") {
+        const chatMessage: ServerMessage = {
+          type: "room:chat",
+          payload: {
+            roomCode: message.roomCode,
+            member: { id: message.memberId, name: message.displayName },
+            text: message.text,
+            timestamp: message.emittedAt,
+          },
+        };
+        for (const session of localSessions) {
+          if (isRoomEventRecipient(session, message.roomCode)) {
+            options.send(session.socket, chatMessage);
+          }
+        }
+        options.logEvent?.("room_event_consumed", {
+          roomCode: message.roomCode,
+          eventType: message.type,
+          sourceInstanceId: message.sourceInstanceId,
+          instanceId: options.instanceId ?? null,
+          localSessionCount: localSessions.length,
+          result: "ok",
+        });
+        return;
+      }
+
       const state =
         message.type === "room_deleted"
           ? {

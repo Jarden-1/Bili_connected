@@ -757,6 +757,41 @@ export function createMessageHandler(options: {
           });
           return;
         }
+        case "room:chat": {
+          const chatText =
+            typeof message.payload.text === "string"
+              ? message.payload.text.trim().slice(0, 500)
+              : "";
+          if (
+            !chatText ||
+            !session.roomCode ||
+            !session.memberId ||
+            session.memberToken !== message.payload.memberToken
+          ) {
+            sendError(
+              socket,
+              "member_token_invalid",
+              MEMBER_TOKEN_INVALID_MESSAGE,
+            );
+            return;
+          }
+          await firePublishRoomEvent(
+            {
+              type: "room_chat",
+              roomCode: session.roomCode,
+              memberId: session.memberId,
+              displayName: session.displayName,
+              text: chatText,
+            },
+            {
+              reason: "room_chat_broadcast_failed",
+              sessionId: session.id,
+              remoteAddress: session.remoteAddress,
+              origin: session.origin,
+            },
+          );
+          return;
+        }
         case "sync:ping": {
           if (
             !consumeTokenBucket(

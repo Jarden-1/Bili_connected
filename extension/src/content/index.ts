@@ -10,6 +10,7 @@ import { createNavigationController } from "./navigation-controller";
 import { startNavigationSignalListener } from "./navigation-signal";
 import { createPageShareButtonController } from "./page-share-button";
 import { createRoomPanelController } from "./room-panel";
+import { createDanmakuChatController } from "./danmaku-chat";
 import { resolvePageShareButtonSettingsHydration } from "./page-share-button-settings";
 import { createPlaybackBindingController } from "./playback-binding-controller";
 import { createRoomStateController } from "./room-state-controller";
@@ -189,6 +190,9 @@ const pageShareButtonController = createPageShareButtonController({
 const roomPanelController = createRoomPanelController({
   runtimeSendMessage,
 });
+const danmakuChatController = createDanmakuChatController({
+  runtimeSendMessage,
+});
 
 void init();
 
@@ -226,6 +230,7 @@ async function init(): Promise<void> {
   });
   pageShareButtonController.start();
   roomPanelController.start();
+  danmakuChatController.start();
   void hydratePageShareButtonSettings();
   playbackBindingController.start();
   navigationController.start();
@@ -244,6 +249,7 @@ async function init(): Promise<void> {
       navigationSignalUnsubscribe = null;
       pageShareButtonController.destroy();
       roomPanelController.destroy();
+      danmakuChatController.destroy();
       autoShareNextController.destroy();
       syncController.destroy();
       playbackBindingController.destroy();
@@ -277,6 +283,11 @@ async function init(): Promise<void> {
       if (message.type === "background:page-share-button-settings") {
         clearPageShareButtonSettingsHydrationTimer();
         pageShareButtonController.setEnabled(message.payload.enabled);
+        return false;
+      }
+
+      if (message.type === "background:room-chat") {
+        danmakuChatController.handleRoomChat(message.payload);
         return false;
       }
 

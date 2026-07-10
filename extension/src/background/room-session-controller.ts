@@ -434,6 +434,17 @@ export function createRoomSessionController(args: {
         args.logServerError(message.payload.code, message.payload.message);
         args.notifyAll();
         return;
+      case "room:chat":
+        await args.notifyContentScripts({
+          type: "background:room-chat",
+          payload: {
+            memberId: message.payload.member.id,
+            displayName: message.payload.member.name,
+            text: message.payload.text,
+            timestamp: message.payload.timestamp,
+          },
+        });
+        return;
       case "sync:pong":
         return;
     }

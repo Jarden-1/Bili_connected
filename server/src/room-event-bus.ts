@@ -32,6 +32,15 @@ export type RoomEventBusMessage =
       roomCode: string;
       sourceInstanceId: string;
       emittedAt: number;
+    }
+  | {
+      type: "room_chat";
+      roomCode: string;
+      sourceInstanceId: string;
+      emittedAt: number;
+      memberId: string;
+      displayName: string;
+      text: string;
     };
 
 export type RoomEventType = RoomEventBusMessage["type"];
@@ -47,6 +56,7 @@ export const ROOM_EVENT_TYPES = [
   "room_member_joined",
   "room_member_left",
   "room_deleted",
+  "room_chat",
 ] as const satisfies readonly RoomEventType[];
 
 type _EnsureAllRoomEventTypesCovered =

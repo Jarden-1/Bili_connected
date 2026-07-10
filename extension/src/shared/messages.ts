@@ -46,7 +46,8 @@ export type ContentToBackgroundMessage =
   | { type: "content:create-room" }
   | { type: "content:join-room"; roomCode: string; joinToken: string }
   | { type: "content:leave-room" }
-  | { type: "content:set-display-name"; displayName: string };
+  | { type: "content:set-display-name"; displayName: string }
+  | { type: "content:room-chat"; text: string };
 
 export interface DebugLogEntry {
   at: number;
@@ -288,4 +289,13 @@ export type BackgroundToContentMessage =
         enabled: boolean;
       };
     }
-  | { type: "background:get-current-video" };
+  | { type: "background:get-current-video" }
+  | {
+      type: "background:room-chat";
+      payload: {
+        memberId: string;
+        displayName: string;
+        text: string;
+        timestamp: number;
+      };
+    };

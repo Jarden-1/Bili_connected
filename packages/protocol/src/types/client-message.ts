@@ -68,6 +68,14 @@ export interface SyncPingMessage {
   };
 }
 
+export interface RoomChatMessage {
+  type: "room:chat";
+  payload: {
+    memberToken: string;
+    text: string;
+  };
+}
+
 export type ClientMessage =
   | CreateRoomMessage
   | JoinRoomMessage
@@ -76,4 +84,5 @@ export type ClientMessage =
   | ShareVideoMessage
   | PlaybackUpdateMessage
   | SyncRequestMessage
-  | SyncPingMessage;
+  | SyncPingMessage
+  | RoomChatMessage;
