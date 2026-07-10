@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import { Redis } from "ioredis";
 import type { MetricsCollector } from "./admin/metrics.js";
-import type { ActiveRoom, ClusterNodeStatus, Session } from "./types.js";
+import type { ActiveRoom, ClusterNodeStatus, LogEvent, Session } from "./types.js";
 import {
   createInMemoryRuntimeStore,
   type RuntimeStore,
@@ -13,6 +13,12 @@ import {
   resolveRoomCodeToLeave,
   shouldRemoveMemberBinding,
 } from "./runtime-store-state.js";
+import { createStructuredLogger } from "./logger.js";
+
+// Canonical project logger (defaults to stdout via console.log). Used instead
+// of raw console.log so these structured events flow through the same logging
+// pipeline as the rest of the server.
+const storeLog: LogEvent = createStructuredLogger();
 
 type RedisMulti = {
   sadd: (...args: string[]) => RedisMulti;
@@ -299,17 +305,13 @@ export async function createRedisRuntimeStore(
       options.onPendingOperationError(context, error);
       return;
     }
-    console.log(
-      JSON.stringify({
-        event: "redis_runtime_store_operation_failed",
-        timestamp: new Date().toISOString(),
-        operationName: context.operationName,
-        pendingCount: context.pendingCount,
-        reason: context.reason,
-        result: context.reason === "backpressure" ? "rejected" : "error",
-        error: error instanceof Error ? error.message : String(error),
-      }),
-    );
+    storeLog("redis_runtime_store_operation_failed", {
+      operationName: context.operationName,
+      pendingCount: context.pendingCount,
+      reason: context.reason,
+      result: context.reason === "backpressure" ? "rejected" : "error",
+      error: error instanceof Error ? error.message : String(error),
+    });
   }
 
   function ensurePendingCapacity(operationName: string): void {
@@ -709,17 +711,13 @@ export async function createRedisRuntimeStore(
           .update(key)
           .digest("hex")
           .slice(0, 16);
-        console.log(
-          JSON.stringify({
-            event: "dedup_slot_ttl_clamped",
-            timestamp: new Date(currentTime).toISOString(),
-            roomCode,
-            keyKind,
-            keyHash,
-            requestedTtlMs,
-            appliedTtlMs: ttlMs,
-          }),
-        );
+        storeLog("dedup_slot_ttl_clamped", {
+          roomCode,
+          keyKind,
+          keyHash,
+          requestedTtlMs,
+          appliedTtlMs: ttlMs,
+        });
       } else {
         ttlMs = requestedTtlMs;
       }
