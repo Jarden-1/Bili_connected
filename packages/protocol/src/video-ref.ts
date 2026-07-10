@@ -3,14 +3,17 @@ export interface BilibiliVideoRef {
   normalizedUrl: string;
 }
 
-const SUPPORTED_BILIBILI_HOSTS = new Set(["www.bilibili.com"]);
+const SUPPORTED_BILIBILI_HOSTS = new Set([
+  "www.bilibili.com",
+  "live.bilibili.com",
+]);
 
 function isSupportedBilibiliHost(hostname: string): boolean {
   return SUPPORTED_BILIBILI_HOSTS.has(hostname);
 }
 
 function parseSupportedBilibiliPath(pathname: string): {
-  kind: "video" | "bangumi" | "festival" | "watchlater";
+  kind: "video" | "bangumi" | "festival" | "watchlater" | "cheese";
   id: string;
 } | null {
   const normalizedPath = pathname.replace(/\/+$/, "");
@@ -22,6 +25,11 @@ function parseSupportedBilibiliPath(pathname: string): {
   const bangumiMatch = normalizedPath.match(/^\/bangumi\/play\/([^/?]+)$/);
   if (bangumiMatch) {
     return { kind: "bangumi", id: bangumiMatch[1] };
+  }
+
+  const cheeseMatch = normalizedPath.match(/^\/cheese\/play\/([^/?]+)$/);
+  if (cheeseMatch) {
+    return { kind: "cheese", id: cheeseMatch[1] };
   }
 
   if (/^\/festival\/[^/?]+$/.test(normalizedPath)) {
@@ -47,6 +55,20 @@ export function parseBilibiliVideoRef(
 
   try {
     const parsed = new URL(url);
+
+    // Live pages: live.bilibili.com/<roomId>
+    if (parsed.hostname === "live.bilibili.com") {
+      const roomMatch = parsed.pathname.match(/^\/(\d+)/);
+      if (roomMatch) {
+        const roomId = roomMatch[1];
+        return {
+          videoId: `live:${roomId}`,
+          normalizedUrl: `https://live.bilibili.com/${roomId}`,
+        };
+      }
+      return null;
+    }
+
     if (!isSupportedBilibiliHost(parsed.hostname)) {
       return null;
     }
