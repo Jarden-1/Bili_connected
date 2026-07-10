@@ -1,6 +1,4 @@
-const ROOM_CODE_PATTERN = /^[A-Z0-9]{6}$/;
-const TOKEN_MIN_LENGTH = 16;
-const TOKEN_MAX_LENGTH = 128;
+const ROOM_CODE_PATTERN = /^\d{4}$/;
 
 export function escapeHtml(value: unknown): string {
   const normalized =
@@ -22,26 +20,23 @@ export function parseInviteValue(
   }
 
   const normalized = trimmed.replace(/\s+/g, "");
+
+  // 4-digit numeric room code — no joinToken needed (public join)
+  if (ROOM_CODE_PATTERN.test(normalized)) {
+    return { roomCode: normalized, joinToken: "" };
+  }
+
+  // Backward compat: full "roomCode:joinToken" format
   const separators = [":", "|", ","];
   for (const separator of separators) {
     const [roomCode, joinToken, ...rest] = normalized.split(separator);
     if (!roomCode || !joinToken || rest.length > 0) {
       continue;
     }
-    const normalizedRoomCode = roomCode.toUpperCase();
-    if (!ROOM_CODE_PATTERN.test(normalizedRoomCode)) {
+    if (!ROOM_CODE_PATTERN.test(roomCode)) {
       continue;
     }
-    if (
-      joinToken.length < TOKEN_MIN_LENGTH ||
-      joinToken.length > TOKEN_MAX_LENGTH
-    ) {
-      continue;
-    }
-    return {
-      roomCode: normalizedRoomCode,
-      joinToken,
-    };
+    return { roomCode, joinToken };
   }
 
   return null;

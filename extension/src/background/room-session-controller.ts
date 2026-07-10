@@ -673,7 +673,6 @@ export function createRoomSessionController(args: {
     if (
       args.connectionState.connected &&
       args.roomSessionState.pendingJoinRoomCode &&
-      args.roomSessionState.pendingJoinToken &&
       !args.roomSessionState.pendingJoinRequestSent
     ) {
       sendJoinRequest(

@@ -202,7 +202,7 @@ export function createDanmakuChatController(args: {
 
     roomButton = document.createElement("button");
     roomButton.type = "button";
-    roomButton.textContent = "发送至房间";
+    roomButton.textContent = "发送到房间";
     roomButton.title = "把当前输入框的内容发送给同房间的人";
     // Match the Bilibili send button's size by mirroring its core geometry
     // (height + horizontal padding) so they sit flush. Background is the

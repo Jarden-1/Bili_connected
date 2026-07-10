@@ -73,7 +73,7 @@ const MOUNT_SELECTORS = [
   ".bilibili-player",
 ];
 
-const ROOM_CODE_PATTERN = /^[A-Z0-9]{6}$/;
+const ROOM_CODE_PATTERN = /^\d{4}$/;
 
 function parseInviteCode(
   value: string,
@@ -82,19 +82,20 @@ function parseInviteCode(
   if (!trimmed) {
     return null;
   }
+  // 4-digit numeric room code (no joinToken needed)
+  if (ROOM_CODE_PATTERN.test(trimmed)) {
+    return { roomCode: trimmed, joinToken: "" };
+  }
+  // Full format: roomCode:joinToken (backward compat)
   for (const sep of [":", "|", ","]) {
     const [roomCode, joinToken, ...rest] = trimmed.split(sep);
     if (!roomCode || !joinToken || rest.length > 0) {
       continue;
     }
-    const normalized = roomCode.toUpperCase();
-    if (!ROOM_CODE_PATTERN.test(normalized)) {
+    if (!ROOM_CODE_PATTERN.test(roomCode)) {
       continue;
     }
-    if (joinToken.length < 16 || joinToken.length > 128) {
-      continue;
-    }
-    return { roomCode: normalized, joinToken };
+    return { roomCode, joinToken };
   }
   return null;
 }
@@ -330,11 +331,6 @@ const PANEL_TEMPLATE = `
       <span class="bsp-nick"></span>
     </div>
   </div>
-  <div class="bsp-name-editor" hidden>
-    <input class="bsp-name-input" type="text" maxlength="${MAX_NAME_LENGTH}" />
-    <button class="bsp-btn bsp-btn-primary bsp-name-ok" type="button" style="padding:5px 8px;">OK</button>
-    <button class="bsp-btn-ghost bsp-name-cancel" type="button" style="padding:5px 6px;">X</button>
-  </div>
 </div>
 `;
 
@@ -461,10 +457,6 @@ export function createRoomPanelController(args: {
     const profileJoined = shadow.querySelector<HTMLDivElement>(
       ".bsp-profile-joined",
     );
-    const nameInput = shadow.querySelector<HTMLInputElement>(".bsp-name-input");
-    const nameOk = shadow.querySelector<HTMLButtonElement>(".bsp-name-ok");
-    const nameCancel =
-      shadow.querySelector<HTMLButtonElement>(".bsp-name-cancel");
 
     createBtn?.addEventListener("click", () => void handleCreateRoom());
 
@@ -486,18 +478,6 @@ export function createRoomPanelController(args: {
 
     profileNotJoined?.addEventListener("click", () => startEditName());
     profileJoined?.addEventListener("click", () => startEditName());
-
-    nameOk?.addEventListener("click", () => void commitName());
-    nameCancel?.addEventListener("click", () => cancelEditName());
-    nameInput?.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") {
-        e.preventDefault();
-        void commitName();
-      } else if (e.key === "Escape") {
-        e.preventDefault();
-        cancelEditName();
-      }
-    });
   }
 
   function showError(message: string): void {
@@ -519,15 +499,6 @@ export function createRoomPanelController(args: {
     }
     const notJoined = shadow.querySelector<HTMLDivElement>(".bsp-not-joined");
     const joined = shadow.querySelector<HTMLDivElement>(".bsp-joined");
-    const nameEditor = shadow.querySelector<HTMLDivElement>(".bsp-name-editor");
-
-    if (nameEditing) {
-      notJoined?.setAttribute("hidden", "");
-      joined?.setAttribute("hidden", "");
-      nameEditor?.removeAttribute("hidden");
-      return;
-    }
-    nameEditor?.setAttribute("hidden", "");
 
     const isJoined = Boolean(state.roomCode && state.roomState);
     if (isJoined) {
@@ -538,6 +509,101 @@ export function createRoomPanelController(args: {
       joined?.setAttribute("hidden", "");
       notJoined?.removeAttribute("hidden");
       renderNotJoined(shadow);
+    }
+
+    // Inline nickname editing — don't hide sections, just swap the nick
+    // text for an input inside the visible profile area.
+    updateInlineNameEditor(shadow);
+  }
+
+  function updateInlineNameEditor(shadow: ShadowRoot): void {
+    const profiles = [
+      shadow.querySelector<HTMLDivElement>(".bsp-profile-notjoined"),
+      shadow.querySelector<HTMLDivElement>(".bsp-profile-joined"),
+    ];
+    for (const profile of profiles) {
+      if (!profile) {
+        continue;
+      }
+      const nick = profile.querySelector<HTMLSpanElement>(".bsp-nick");
+      const input = profile.querySelector<HTMLInputElement>(
+        ".bsp-name-input-inline",
+      );
+
+      const isProfileVisible = profile.isConnected && !profile.closest("[hidden]");
+
+      if (nameEditing && isProfileVisible) {
+        if (nick) {
+          nick.style.display = "none";
+        }
+        if (!input) {
+          const newInput = document.createElement("input");
+          newInput.className = "bsp-name-input-inline";
+          newInput.type = "text";
+          newInput.maxLength = MAX_NAME_LENGTH;
+          Object.assign(newInput.style, {
+            border: `1.5px solid ${BILI_BLUE}`,
+            borderRadius: "4px",
+            padding: "2px 4px",
+            fontSize: "12px",
+            width: "70px",
+            background: "#fff",
+            outline: "none",
+            fontFamily: "inherit",
+          } as CSSStyleDeclaration);
+          profile.appendChild(newInput);
+          newInput.value = state.displayName ?? "";
+          newInput.focus();
+          newInput.select();
+          newInput.addEventListener("keydown", (e: KeyboardEvent) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              void commitNameInline(newInput);
+            } else if (e.key === "Escape") {
+              e.preventDefault();
+              cancelEditName();
+            }
+          });
+          newInput.addEventListener("blur", () => {
+            if (nameEditing) {
+              void commitNameInline(newInput);
+            }
+          });
+        }
+      } else {
+        if (nick) {
+          nick.style.display = "";
+        }
+        input?.remove();
+      }
+    }
+  }
+
+  async function commitNameInline(input: HTMLInputElement): Promise<void> {
+    const value = input.value.trim();
+    if (!value) {
+      cancelEditName();
+      return;
+    }
+    if (value.length > MAX_NAME_LENGTH) {
+      return;
+    }
+    nameEditing = false;
+    state.pending = "name";
+    render();
+    try {
+      const resp = await args.runtimeSendMessage<{
+        ok: boolean;
+        displayName?: string;
+      }>({ type: "content:set-display-name", displayName: value });
+      if (resp?.ok && resp.displayName) {
+        state.displayName = resp.displayName;
+      }
+    } catch {
+      // ignore
+    } finally {
+      state.pending = "none";
+      render();
     }
   }
 
@@ -744,10 +810,8 @@ export function createRoomPanelController(args: {
 
   async function handleCopy(): Promise<void> {
     const code = state.roomCode ?? "";
-    const token = state.joinToken ?? "";
-    const invite = token ? `${code}:${token}` : code;
     try {
-      await navigator.clipboard.writeText(invite);
+      await navigator.clipboard.writeText(code);
       showError("Copied!");
     } catch {
       showError("Copy failed");
@@ -757,52 +821,11 @@ export function createRoomPanelController(args: {
   function startEditName(): void {
     nameEditing = true;
     render();
-    const shadow = getShadow();
-    const input = shadow?.querySelector<HTMLInputElement>(".bsp-name-input");
-    if (input) {
-      input.value = state.displayName ?? "";
-      input.focus();
-      input.select();
-    }
   }
 
   function cancelEditName(): void {
     nameEditing = false;
     render();
-  }
-
-  async function commitName(): Promise<void> {
-    const shadow = getShadow();
-    const input = shadow?.querySelector<HTMLInputElement>(".bsp-name-input");
-    if (!input) {
-      return;
-    }
-    const value = input.value.trim();
-    if (!value) {
-      showError("Name required");
-      return;
-    }
-    if (value.length > MAX_NAME_LENGTH) {
-      showError(`Max ${MAX_NAME_LENGTH} chars`);
-      return;
-    }
-    nameEditing = false;
-    state.pending = "name";
-    render();
-    try {
-      const resp = await args.runtimeSendMessage<{
-        ok: boolean;
-        displayName?: string;
-      }>({ type: "content:set-display-name", displayName: value });
-      if (resp?.ok && resp.displayName) {
-        state.displayName = resp.displayName;
-      }
-    } catch {
-      // ignore
-    } finally {
-      state.pending = "none";
-      render();
-    }
   }
 
   async function fetchInitialState(): Promise<void> {

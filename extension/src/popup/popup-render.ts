@@ -15,12 +15,9 @@ export function resetPopupRenderDebugStateForTests(): void {
 
 export function formatInviteDraft(
   roomCode: string | null,
-  joinToken: string | null,
+  _joinToken: string | null,
 ): string {
-  if (!roomCode) {
-    return "";
-  }
-  return joinToken ? `${roomCode}:${joinToken}` : roomCode;
+  return roomCode ?? "";
 }
 
 export function applyRoomActionControlState(args: {

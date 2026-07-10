@@ -656,7 +656,7 @@ export function createRoomService(options: {
     joinToken: string;
     previousMemberToken?: string;
   }): Promise<JoinTargetState> {
-    if (args.room.joinToken !== args.joinToken) {
+    if (args.joinToken && args.room.joinToken !== args.joinToken) {
       rejectJoinToken(
         args.session,
         args.roomCode,

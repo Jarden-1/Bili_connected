@@ -58,9 +58,8 @@ type CreateInMemoryRoomStoreOptions = {
 
 export function createRoomCode(): string {
   return Array.from(
-    { length: 6 },
-    () =>
-      ROOM_CODE_ALPHABET[Math.floor(Math.random() * ROOM_CODE_ALPHABET.length)],
+    { length: 4 },
+    () => Math.floor(Math.random() * 10).toString(),
   ).join("");
 }
 
