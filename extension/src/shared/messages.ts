@@ -42,7 +42,11 @@ export type ContentToBackgroundMessage =
     }
   | { type: "content:get-page-share-button-settings" }
   | { type: "content:set-page-share-button-enabled"; enabled: boolean }
-  | { type: "content:debug-log"; payload: { message: string } };
+  | { type: "content:debug-log"; payload: { message: string } }
+  | { type: "content:create-room" }
+  | { type: "content:join-room"; roomCode: string; joinToken: string }
+  | { type: "content:leave-room" }
+  | { type: "content:set-display-name"; displayName: string };
 
 export interface DebugLogEntry {
   at: number;

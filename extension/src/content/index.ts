@@ -9,6 +9,7 @@ import { createContentStateStore } from "./content-store";
 import { createNavigationController } from "./navigation-controller";
 import { startNavigationSignalListener } from "./navigation-signal";
 import { createPageShareButtonController } from "./page-share-button";
+import { createRoomPanelController } from "./room-panel";
 import { resolvePageShareButtonSettingsHydration } from "./page-share-button-settings";
 import { createPlaybackBindingController } from "./playback-binding-controller";
 import { createRoomStateController } from "./room-state-controller";
@@ -185,6 +186,9 @@ const pageShareButtonController = createPageShareButtonController({
   runtimeSendMessage,
   toastPresenter,
 });
+const roomPanelController = createRoomPanelController({
+  runtimeSendMessage,
+});
 
 void init();
 
@@ -221,6 +225,7 @@ async function init(): Promise<void> {
     }
   });
   pageShareButtonController.start();
+  roomPanelController.start();
   void hydratePageShareButtonSettings();
   playbackBindingController.start();
   navigationController.start();
@@ -238,6 +243,7 @@ async function init(): Promise<void> {
       navigationSignalUnsubscribe?.();
       navigationSignalUnsubscribe = null;
       pageShareButtonController.destroy();
+      roomPanelController.destroy();
       autoShareNextController.destroy();
       syncController.destroy();
       playbackBindingController.destroy();
@@ -247,12 +253,14 @@ async function init(): Promise<void> {
   document.addEventListener("fullscreenchange", () => {
     toastPresenter.resetMountTarget();
     pageShareButtonController.resetMountTarget();
+    roomPanelController.resetMountTarget();
   });
   void reportCurrentUser((msg) => runtimeSendMessage(msg));
 
   chrome.runtime.onMessage.addListener(
     (message: BackgroundToContentMessage, _sender, sendResponse) => {
       if (message.type === "background:apply-room-state") {
+        roomPanelController.applyRoomState(message.payload);
         void syncController.applyRoomState(
           message.payload,
           message.shareToast ?? null,
@@ -261,6 +269,7 @@ async function init(): Promise<void> {
       }
 
       if (message.type === "background:sync-status") {
+        roomPanelController.handleSyncStatus(message.payload);
         roomStateController.handleSyncStatus(message.payload);
         return false;
       }

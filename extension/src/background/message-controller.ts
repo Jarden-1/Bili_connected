@@ -36,6 +36,7 @@ export function createMessageController(args: {
     memberToken: string | null;
     memberId: string | null;
     displayName: string | null;
+    joinToken: string | null;
     roomState: RoomState | null;
     awaitingFreshRoomState: boolean;
   };
@@ -570,7 +571,13 @@ export function createMessageController(args: {
         } satisfies PageShareButtonSettingsResponse);
         return;
       case "content:report-user":
-        if (args.roomSessionState.displayName !== message.payload.displayName) {
+        // Auto-report from Bilibili login only seeds the initial display name.
+        // Once set, subsequent auto-reports are ignored so user-edited nicknames
+        // (via content:set-display-name) survive page reloads.
+        if (
+          args.roomSessionState.displayName === null &&
+          message.payload.displayName
+        ) {
           args.roomSessionState.displayName = message.payload.displayName;
           await args.persistProfileState();
           if (
@@ -636,13 +643,59 @@ export function createMessageController(args: {
                 ),
                 memberId: args.roomSessionState.memberId,
                 roomCode: args.roomSessionState.roomCode,
+                displayName: args.roomSessionState.displayName,
+                joinToken: args.roomSessionState.joinToken,
               }
             : {
                 ok: false,
                 memberId: args.roomSessionState.memberId,
                 roomCode: args.roomSessionState.roomCode,
+                displayName: args.roomSessionState.displayName,
+                joinToken: args.roomSessionState.joinToken,
               },
         );
+        return;
+      case "content:create-room":
+        await args.roomSessionController.requestCreateRoom();
+        sendResponse({ ok: true });
+        return;
+      case "content:join-room":
+        await args.roomSessionController.requestJoinRoom(
+          message.roomCode,
+          message.joinToken,
+        );
+        if (!args.connectionState.connected) {
+          sendResponse({ ok: false, error: "not-connected" });
+          return;
+        }
+        await args.roomSessionController.waitForJoinAttemptResult();
+        sendResponse({ ok: true });
+        return;
+      case "content:leave-room":
+        await args.roomSessionController.requestLeaveRoom();
+        sendResponse({ ok: true });
+        return;
+      case "content:set-display-name":
+        args.roomSessionState.displayName =
+          message.displayName.trim() || args.roomSessionState.displayName;
+        await args.persistProfileState();
+        if (
+          args.connectionState.connected &&
+          args.roomSessionState.roomCode &&
+          args.roomSessionState.memberToken
+        ) {
+          args.sendToServer({
+            type: "profile:update",
+            payload: {
+              memberToken: args.roomSessionState.memberToken,
+              displayName: args.roomSessionState.displayName,
+            },
+          });
+        }
+        sendResponse({
+          ok: true,
+          displayName: args.roomSessionState.displayName,
+        });
         return;
       case "content:debug-log":
         args.diagnosticsController.log(
