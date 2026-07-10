@@ -62,11 +62,10 @@ const MEMBER_COLORS = [
   "#E91E63",
 ];
 
-// Inject the panel inside the toolbar container, after .toolbar-left and
-// before .toolbar-right (which is the three-dot menu). Fall back to other
-// anchors if the toolbar structure isn't available.
+// Inject the panel inside the Bilibili toolbar container (the row that
+// holds like / coin / favorite / share / more). injectInto will
+// append-then-reposition to sit just before the three-dot "more" menu.
 const MOUNT_SELECTORS = [
-  ".video-toolbar-container .toolbar-left",
   ".video-toolbar-container",
   ".video-info-container",
   ".bpx-player-container",
@@ -372,19 +371,6 @@ export function createRoomPanelController(args: {
     if (!host) {
       return;
     }
-    if (mountPoint.classList.contains("toolbar-left")) {
-      // Insert after toolbar-left, before toolbar-right (the three-dot menu).
-      const parent = mountPoint.parentElement;
-      if (parent) {
-        const toolbarRight = parent.querySelector(".toolbar-right");
-        if (toolbarRight) {
-          parent.insertBefore(host, toolbarRight);
-        } else {
-          parent.appendChild(host);
-        }
-      }
-      return;
-    }
     if (
       mountPoint.classList.contains("video-info-container") ||
       mountPoint.classList.contains("video-info-detail")
@@ -392,7 +378,18 @@ export function createRoomPanelController(args: {
       mountPoint.insertBefore(host, mountPoint.firstChild);
       return;
     }
-    mountPoint.insertAdjacentElement("afterend", host);
+    // For the Bilibili toolbar container: append the panel, then try to
+    // re-position it to sit right before the three-dot "more" menu. This
+    // works for any toolbar DOM structure (the toolbar may or may not
+    // have .toolbar-left / .toolbar-right sub-containers depending on the
+    // Bilibili page revision).
+    mountPoint.appendChild(host);
+    const threeDot = mountPoint.querySelector(
+      ".toolbar-right, .video-toolbar-right, .more, [class*='more-menu'], [class*='toolbar-right']",
+    );
+    if (threeDot && threeDot.parentElement === mountPoint) {
+      mountPoint.insertBefore(host, threeDot);
+    }
   }
 
   function ensureMounted(): void {
