@@ -236,19 +236,20 @@ export function createDanmakuChatController(args: {
     roomButton.type = "button";
     roomButton.textContent = "发送到房间";
     roomButton.title = "把当前输入框的内容发送给同房间的人";
-    // Match the Bilibili send button's size by mirroring its core geometry
-    // (height + horizontal padding) so they sit flush. Background is the
-    // brand pink to make it visually distinct from the blue send button.
+    // Match the Bilibili send button's height so they sit flush on the
+    // same baseline. Use a smaller font + snug padding so the label
+    // doesn't blow the button out, and no left margin so the two
+    // buttons stay glued together.
     Object.assign(roomButton.style, {
       background: BILI_PINK,
       color: "#fff",
       border: "none",
       borderRadius: "4px",
-      padding: sendBtn ? getSendButtonPadding(sendBtn) : "4px 10px",
+      padding: sendBtn ? getSendButtonPadding(sendBtn) : "0 8px",
       height: sendBtn ? getSendButtonHeight(sendBtn) : "auto",
       minWidth: "auto",
-      marginLeft: "4px",
-      fontSize: sendBtn ? getSendButtonFontSize(sendBtn) : "13px",
+      marginLeft: "0px",
+      fontSize: "12px",
       fontWeight: "500",
       cursor: "pointer",
       whiteSpace: "nowrap",
