@@ -129,6 +129,8 @@ export function createDanmakuChatController(args: {
 }): DanmakuChatController {
   let overlayHost: HTMLDivElement | null = null;
   let overlay: HTMLDivElement | null = null;
+  let currentVideoArea: HTMLElement | null = null;
+  let overlayResizeObserver: ResizeObserver | null = null;
   let roomButton: HTMLButtonElement | null = null;
   let inputEl: HTMLTextAreaElement | HTMLInputElement | null = null;
   let sendBtnEl: HTMLElement | null = null;
@@ -152,23 +154,53 @@ export function createDanmakuChatController(args: {
     if (!overlayHost) {
       overlayHost = document.createElement("div");
       overlayHost.className = "bsp-danmaku-overlay-host";
-      overlayHost.style.position = "absolute";
-      overlayHost.style.top = "0";
-      overlayHost.style.left = "0";
-      overlayHost.style.right = "0";
-      overlayHost.style.bottom = "0";
-      overlayHost.style.pointerEvents = "none";
-      overlayHost.style.zIndex = "70";
+      // Use position:fixed and absolute viewport coordinates so we never
+      // touch Bilibili's own inline styles (mutating them broke the
+      // page's image rendering by disturbing React's style bindings).
+      Object.assign(overlayHost.style, {
+        position: "fixed",
+        top: "0",
+        left: "0",
+        right: "0",
+        bottom: "0",
+        pointerEvents: "none",
+        zIndex: "70",
+      });
       const shadow = overlayHost.attachShadow({ mode: "open" });
       const template = document.createElement("template");
       template.innerHTML = OVERLAY_TEMPLATE.trim();
       shadow.appendChild(template.content.cloneNode(true));
       overlay = shadow.querySelector(".bsp-danmaku-overlay");
     }
-    if (!videoArea.style.position) {
-      videoArea.style.position = "relative";
+    document.body.appendChild(overlayHost);
+    currentVideoArea = videoArea;
+    updateOverlayPosition();
+    if (overlayResizeObserver) {
+      overlayResizeObserver.disconnect();
     }
-    videoArea.appendChild(overlayHost);
+    overlayResizeObserver = new ResizeObserver(() => updateOverlayPosition());
+    overlayResizeObserver.observe(videoArea);
+    window.addEventListener("scroll", updateOverlayPosition, { passive: true });
+    window.addEventListener("resize", updateOverlayPosition, { passive: true });
+  }
+
+  function updateOverlayPosition(): void {
+    if (!overlayHost || !currentVideoArea) {
+      return;
+    }
+    const rect = currentVideoArea.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) {
+      return;
+    }
+    const heightExcludingControls = Math.max(0, rect.height - 48);
+    overlayHost.style.left = `${rect.left}px`;
+    overlayHost.style.top = `${rect.top}px`;
+    overlayHost.style.width = `${rect.width}px`;
+    overlayHost.style.height = `${heightExcludingControls}px`;
+    if (overlay) {
+      overlay.style.width = `${rect.width}px`;
+      overlay.style.height = `${heightExcludingControls}px`;
+    }
   }
 
   function ensureInputButtonMounted(): void {
@@ -388,9 +420,14 @@ export function createDanmakuChatController(args: {
       danmakuItems.length = 0;
       roomButton?.remove();
       roomButton = null;
+      overlayResizeObserver?.disconnect();
+      overlayResizeObserver = null;
+      window.removeEventListener("scroll", updateOverlayPosition);
+      window.removeEventListener("resize", updateOverlayPosition);
       overlayHost?.remove();
       overlayHost = null;
       overlay = null;
+      currentVideoArea = null;
       inputEl = null;
       sendBtnEl = null;
     },
