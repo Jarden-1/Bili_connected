@@ -1,13 +1,11 @@
 /**
- * Danmaku chat — injects a "Room" toggle button next to the Bilibili danmaku
- * input, and renders room chat messages as colored scrolling danmaku on top
- * of the video player.
+ * Danmaku chat — a "发送至房间" button injected next to Bilibili's danmaku
+ * send button. Clicking the button sends the current input text to the
+ * room directly (no mode switching — the Bilibili input box is left
+ * untouched so the user can still send regular danmaku with Enter).
  *
- * - Room mode: input border turns blue (#00A1D6), placeholder changes,
- *   Enter sends a room:chat message (B站原生弹幕发送被拦截).
- * - Normal mode: B站原生弹幕行为不受影响.
- * - Incoming room:chat messages render as colored danmaku (per-user color +
- *   thin border + nickname prefix) scrolling right-to-left.
+ * Incoming room:chat messages render as colored scrolling danmaku on top of
+ * the video player (per-user color + border + nickname prefix).
  */
 
 import type { ContentToBackgroundMessage } from "../shared/messages";
@@ -43,7 +41,7 @@ const MEMBER_COLORS = [
   "#E74C3C",
   "#1ABC9C",
   "#F39C12",
-  "#3498DB",
+  "#3499DB",
   "#E67E22",
   "#2ECC71",
   "#E91E63",
@@ -59,13 +57,6 @@ const SEND_BTN_SELECTORS = [
   ".bpx-player-dm-btn-send",
   ".bilibili-player-video-danmaku-btn-send",
   ".bpx-player-dm-btn",
-];
-
-const INPUT_WRAP_SELECTORS = [
-  ".bpx-player-dm-input-wrap",
-  ".bpx-player-dm-bottom",
-  ".bilibili-player-video-danmaku-function-area",
-  ".bpx-player-dm-function-area",
 ];
 
 const VIDEO_AREA_SELECTORS = [
@@ -139,10 +130,9 @@ export function createDanmakuChatController(args: {
   let overlayHost: HTMLDivElement | null = null;
   let overlay: HTMLDivElement | null = null;
   let roomButton: HTMLButtonElement | null = null;
-  let inputEl: HTMLElement | null = null;
+  let inputEl: HTMLTextAreaElement | HTMLInputElement | null = null;
   let sendBtnEl: HTMLElement | null = null;
   let started = false;
-  let roomMode = false;
   let mountTimer = 0;
   let danmakuCount = 0;
   const danmakuItems: HTMLDivElement[] = [];
@@ -175,7 +165,7 @@ export function createDanmakuChatController(args: {
       shadow.appendChild(template.content.cloneNode(true));
       overlay = shadow.querySelector(".bsp-danmaku-overlay");
     }
-    if (videoArea.style.position === "static" || !videoArea.style.position) {
+    if (!videoArea.style.position) {
       videoArea.style.position = "relative";
     }
     videoArea.appendChild(overlayHost);
@@ -185,29 +175,17 @@ export function createDanmakuChatController(args: {
     if (!started) {
       return;
     }
-    const input = querySelector(INPUT_SELECTORS) as
-      | HTMLInputElement
-      | HTMLTextAreaElement
-      | null;
+    const input = querySelector(INPUT_SELECTORS);
     const sendBtn = querySelector(SEND_BTN_SELECTORS);
-    const wrap = querySelector(INPUT_WRAP_SELECTORS);
 
-    if (!input && !wrap) {
+    if (!input && !sendBtn) {
       scheduleMountCheck();
       return;
     }
 
     if (inputEl !== input) {
-      inputEl = input;
-      if (input) {
-        input.addEventListener(
-          "keydown",
-          (e) => handleInputKeydown(e as KeyboardEvent),
-          true,
-        );
-      }
+      inputEl = (input as HTMLTextAreaElement | HTMLInputElement) ?? null;
     }
-
     if (sendBtnEl !== sendBtn) {
       sendBtnEl = sendBtn;
     }
@@ -216,7 +194,7 @@ export function createDanmakuChatController(args: {
       return;
     }
 
-    const anchor = sendBtn?.parentElement ?? wrap ?? input?.parentElement;
+    const anchor = sendBtn?.parentElement ?? input?.parentElement;
     if (!anchor) {
       scheduleMountCheck();
       return;
@@ -224,39 +202,45 @@ export function createDanmakuChatController(args: {
 
     roomButton = document.createElement("button");
     roomButton.type = "button";
-    roomButton.textContent = "房间";
-    roomButton.title = "切换为房间消息模式";
+    roomButton.textContent = "发送至房间";
+    roomButton.title = "把当前输入框的内容发送给同房间的人";
+    // Match the Bilibili send button's size by mirroring its core geometry
+    // (height + horizontal padding) so they sit flush. Background is the
+    // brand pink to make it visually distinct from the blue send button.
     Object.assign(roomButton.style, {
       background: BILI_PINK,
       color: "#fff",
       border: "none",
       borderRadius: "4px",
-      padding: "4px 10px",
-      fontSize: "12px",
-      fontWeight: "600",
-      cursor: "pointer",
+      padding: sendBtn ? getSendButtonPadding(sendBtn) : "4px 10px",
+      height: sendBtn ? getSendButtonHeight(sendBtn) : "auto",
+      minWidth: "auto",
       marginLeft: "4px",
+      fontSize: sendBtn ? getSendButtonFontSize(sendBtn) : "13px",
+      fontWeight: "500",
+      cursor: "pointer",
       whiteSpace: "nowrap",
       transition: "background 0.15s, opacity 0.15s",
       fontFamily: "inherit",
+      lineHeight: sendBtn ? getSendButtonLineHeight(sendBtn) : "normal",
     } as CSSStyleDeclaration);
 
     roomButton.addEventListener("mouseenter", () => {
       if (!roomButton) {
         return;
       }
-      roomButton.style.opacity = "0.85";
+      roomButton.style.background = "#E85A8B";
     });
     roomButton.addEventListener("mouseleave", () => {
       if (!roomButton) {
         return;
       }
-      roomButton.style.opacity = "1";
+      roomButton.style.background = BILI_PINK;
     });
     roomButton.addEventListener("click", (e) => {
       e.preventDefault();
       e.stopPropagation();
-      toggleRoomMode();
+      void handleSendToRoom();
     });
 
     if (sendBtn && sendBtn.parentElement === anchor) {
@@ -264,7 +248,28 @@ export function createDanmakuChatController(args: {
     } else {
       anchor.appendChild(roomButton);
     }
-    updateInputAppearance();
+  }
+
+  function getSendButtonHeight(sendBtn: HTMLElement): string {
+    const rect = sendBtn.getBoundingClientRect();
+    if (rect.height > 0) {
+      return `${rect.height}px`;
+    }
+    const cs = window.getComputedStyle(sendBtn);
+    return cs.height !== "auto" ? cs.height : "auto";
+  }
+
+  function getSendButtonPadding(sendBtn: HTMLElement): string {
+    const cs = window.getComputedStyle(sendBtn);
+    return `${cs.paddingTop || "4px"} ${cs.paddingRight || "10px"} ${cs.paddingBottom || "4px"} ${cs.paddingLeft || "10px"}`;
+  }
+
+  function getSendButtonFontSize(sendBtn: HTMLElement): string {
+    return window.getComputedStyle(sendBtn).fontSize || "13px";
+  }
+
+  function getSendButtonLineHeight(sendBtn: HTMLElement): string {
+    return window.getComputedStyle(sendBtn).lineHeight || "normal";
   }
 
   function scheduleMountCheck(): void {
@@ -282,66 +287,24 @@ export function createDanmakuChatController(args: {
     }, MOUNT_CHECK_MS);
   }
 
-  function toggleRoomMode(): void {
-    roomMode = !roomMode;
-    updateInputAppearance();
-  }
-
-  function updateInputAppearance(): void {
+  async function handleSendToRoom(): Promise<void> {
     if (!inputEl) {
       return;
     }
-    if (roomMode) {
-      inputEl.style.border = `2px solid ${BILI_BLUE}`;
-      inputEl.style.borderRadius = "4px";
-      inputEl.style.boxShadow = `0 0 0 2px rgba(0,161,214,0.15)`;
-      if (inputEl instanceof HTMLInputElement ||
-          inputEl instanceof HTMLTextAreaElement) {
-        inputEl.placeholder = "给同房朋友说点什么...";
-      }
-      if (roomButton) {
-        roomButton.style.background = BILI_BLUE;
-        roomButton.textContent = "弹幕";
-        roomButton.title = "切回普通弹幕";
-      }
-    } else {
-      inputEl.style.border = "";
-      inputEl.style.borderRadius = "";
-      inputEl.style.boxShadow = "";
-      if (inputEl instanceof HTMLInputElement ||
-          inputEl instanceof HTMLTextAreaElement) {
-        inputEl.placeholder = "";
-      }
-      if (roomButton) {
-        roomButton.style.background = BILI_PINK;
-        roomButton.textContent = "房间";
-        roomButton.title = "切换为房间消息模式";
-      }
-    }
-  }
-
-  function handleInputKeydown(e: KeyboardEvent): void {
-    if (!roomMode || e.key !== "Enter") {
-      return;
-    }
-    e.preventDefault();
-    e.stopPropagation();
-    const input = e.target as
-      | HTMLInputElement
-      | HTMLTextAreaElement
-      | null;
-    if (!input) {
-      return;
-    }
-    const text = input.value.trim();
+    const text = inputEl.value.trim();
     if (!text) {
       return;
     }
-    input.value = "";
-    void args.runtimeSendMessage({
-      type: "content:room-chat",
-      text: text.slice(0, 500),
-    });
+    // Clear the input immediately so the user gets quick feedback
+    inputEl.value = "";
+    try {
+      await args.runtimeSendMessage({
+        type: "content:room-chat",
+        text: text.slice(0, 500),
+      });
+    } catch {
+      // ignore
+    }
   }
 
   function showDanmaku(payload: {
@@ -415,7 +378,6 @@ export function createDanmakuChatController(args: {
     },
     destroy() {
       started = false;
-      roomMode = false;
       if (mountTimer) {
         window.clearInterval(mountTimer);
         mountTimer = 0;

@@ -131,6 +131,16 @@ export function createMessageController(args: {
     switch (message.type) {
       case "popup:create-room":
         await args.roomSessionController.requestCreateRoom();
+        // Wait for the asynchronous room:created response to populate
+        // roomSessionState.joinToken (up to 5s) so the popup gets the fresh
+        // invite code on the first round-trip instead of a stale null.
+        const createDeadline = Date.now() + 5000;
+        while (
+          !args.roomSessionState.joinToken &&
+          Date.now() < createDeadline
+        ) {
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        }
         sendResponse(args.popupStateController.popupState());
         return;
       case "popup:join-room":

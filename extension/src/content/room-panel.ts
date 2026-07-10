@@ -1,14 +1,13 @@
 /**
- * Room panel — a single-line inline panel injected below the Bilibili player.
+ * Room panel — a single-line inline panel injected next to Bilibili's
+ * like/coin/favorite/share toolbar (right after the share icon, before the
+ * three-dot menu).
  *
  * Two states:
- * - Not joined: [Create Room] [Join input] ........ [Nickname]
- * - Joined:     [Sync Page] [Room info+copy+leave] [Members] [Nickname]
+ * - Not joined: [Create Room] [Invite input] [Join] ... [Nickname]
+ * - Joined:     [Sync] [Room code + copy + leave] [Members] [Nickname]
  *
  * Nickname is editable inline (click to edit, Enter to save).
- * All room operations reuse existing background message channels
- * (content:create-room / content:join-room / content:leave-room /
- *  content:share-current-video / content:set-display-name).
  */
 
 import type { RoomState } from "@bili-syncplay/protocol";
@@ -63,9 +62,13 @@ const MEMBER_COLORS = [
   "#E91E63",
 ];
 
+// Inject the panel inside the toolbar container, after .toolbar-left and
+// before .toolbar-right (which is the three-dot menu). Fall back to other
+// anchors if the toolbar structure isn't available.
 const MOUNT_SELECTORS = [
+  ".video-toolbar-container .toolbar-left",
+  ".video-toolbar-container",
   ".video-info-container",
-  ".video-info-detail",
   ".bpx-player-container",
   ".bilibili-player",
 ];
@@ -122,123 +125,181 @@ function truncate(text: string, max: number): string {
 const PANEL_TEMPLATE = `
 <style>
   :host { all: initial; display: block; }
-  * { box-sizing: border-box; }
+  * { box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif; }
   .bsp-panel {
     display: flex;
     align-items: center;
-    gap: 8px;
-    height: 44px;
-    padding: 0 12px;
-    margin-bottom: 6px;
-    background: #fff;
-    border-radius: 8px;
-    border: 1px solid #E3E5E7;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
-    font-size: 13px;
+    gap: 6px;
+    height: 32px;
+    padding: 0 8px;
+    background: #F6F7F8;
+    border-radius: 6px;
     color: #18191C;
+    font-size: 12px;
     overflow: hidden;
   }
   .bsp-section {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 6px;
     flex: 1;
     min-width: 0;
   }
   .bsp-section[hidden] { display: none; }
+
   .bsp-btn {
-    padding: 6px 14px;
     border: none;
-    border-radius: 6px;
-    font-size: 13px;
+    border-radius: 4px;
+    font-size: 12px;
     font-weight: 500;
     cursor: pointer;
     white-space: nowrap;
     transition: opacity 0.15s, background 0.15s;
     font-family: inherit;
+    line-height: 1;
   }
-  .bsp-btn:disabled { opacity: 0.55; cursor: wait; }
-  .bsp-btn-primary { background: ${BILI_BLUE}; color: #fff; }
+  .bsp-btn:disabled { opacity: 0.5; cursor: wait; }
+  .bsp-btn-primary {
+    background: ${BILI_BLUE};
+    color: #fff;
+    padding: 6px 10px;
+  }
   .bsp-btn-primary:hover:not(:disabled) { background: #00B5E5; }
   .bsp-btn-ghost {
-    background: transparent; color: #9499A0;
-    border: 1px solid #E3E5E7; padding: 3px 8px; font-size: 12px;
-    border-radius: 4px; cursor: pointer; font-family: inherit;
+    background: transparent;
+    color: #61666D;
+    padding: 5px 8px;
   }
-  .bsp-btn-ghost:hover:not(:disabled) { color: ${BILI_BLUE}; border-color: ${BILI_BLUE}; }
+  .bsp-btn-ghost:hover:not(:disabled) { color: ${BILI_BLUE}; }
   .bsp-btn-danger {
-    background: transparent; color: #F25D43;
-    border: none; padding: 3px 8px; font-size: 12px;
-    cursor: pointer; font-family: inherit;
+    background: transparent;
+    color: #919499;
+    padding: 5px 6px;
+    font-size: 11px;
   }
-  .bsp-btn-danger:hover:not(:disabled) { color: #E0402E; }
+  .bsp-btn-danger:hover:not(:disabled) { color: #F25D43; }
+
   .bsp-join-input {
-    flex: 1; min-width: 0;
-    border: 1px dashed #C9CCD0; border-radius: 6px;
-    padding: 5px 10px; font-size: 13px;
-    background: transparent; color: #18191C; outline: none;
+    flex: 1;
+    min-width: 0;
+    border: 1px solid #E3E5E7;
+    border-radius: 4px;
+    padding: 5px 8px;
+    font-size: 12px;
+    background: #fff;
+    color: #18191C;
+    outline: none;
     font-family: inherit;
   }
-  .bsp-join-input:focus { border-color: ${BILI_BLUE}; border-style: solid; }
+  .bsp-join-input:focus { border-color: ${BILI_BLUE}; }
   .bsp-join-input::placeholder { color: #C9CCD0; }
+
   .bsp-room-info {
-    display: flex; align-items: center; gap: 4px;
-    padding: 3px 8px; background: #F1F2F3; border-radius: 6px;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 6px;
+    background: #fff;
+    border-radius: 4px;
     min-width: 0;
   }
   .bsp-room-name {
-    font-weight: 500; color: #18191C;
-    max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    font-weight: 500;
+    color: #18191C;
+    max-width: 100px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .bsp-room-code {
-    font-size: 11px; color: #9499A0; background: #fff;
-    padding: 1px 5px; border-radius: 3px; font-family: monospace;
+    font-size: 11px;
+    color: #9499A0;
+    font-family: monospace;
   }
+
   .bsp-members {
-    display: flex; align-items: center; gap: 3px;
-    margin-left: auto; flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    margin-left: auto;
+    flex-shrink: 0;
   }
   .bsp-member-avatar {
-    width: 24px; height: 24px; border-radius: 50%;
-    display: flex; align-items: center; justify-content: center;
-    font-size: 10px; font-weight: 600; color: #fff;
-    border: 2px solid #fff;
-    box-shadow: 0 0 0 1px rgba(0,0,0,0.06);
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 9px;
+    font-weight: 600;
+    color: #fff;
+    border: 1.5px solid #F6F7F8;
   }
   .bsp-member-avatar.bsp-self { border-color: ${BILI_PINK}; }
   .bsp-member-count {
-    font-size: 12px; color: ${BILI_BLUE}; font-weight: 500; margin-left: 2px;
+    font-size: 11px;
+    color: ${BILI_BLUE};
+    font-weight: 500;
+    margin-left: 2px;
   }
+
   .bsp-profile {
-    display: flex; align-items: center; gap: 5px;
-    cursor: pointer; padding: 3px 8px; border-radius: 6px;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    cursor: pointer;
+    padding: 3px 6px;
+    border-radius: 4px;
     transition: background 0.15s;
     flex-shrink: 0;
   }
-  .bsp-profile:hover { background: #F1F2F3; }
+  .bsp-profile:hover { background: rgba(0,0,0,0.04); }
   .bsp-profile-avatar {
-    width: 24px; height: 24px; border-radius: 50%;
-    background: ${BILI_BLUE}; color: #fff;
-    display: flex; align-items: center; justify-content: center;
-    font-size: 10px; font-weight: 600;
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    background: ${BILI_BLUE};
+    color: #fff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 9px;
+    font-weight: 600;
     flex-shrink: 0;
   }
   .bsp-nick {
-    font-size: 13px; color: #61666D;
-    max-width: 100px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    font-size: 12px;
+    color: #61666D;
+    max-width: 70px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
+
   .bsp-name-editor {
-    display: flex; align-items: center; gap: 4px;
+    display: flex;
+    align-items: center;
+    gap: 4px;
     flex-shrink: 0;
   }
   .bsp-name-editor[hidden] { display: none; }
   .bsp-name-input {
-    border: 1.5px solid ${BILI_BLUE}; border-radius: 6px; padding: 4px 8px;
-    font-size: 13px; color: #18191C; outline: none;
-    width: 100px; background: #fff; font-family: inherit;
+    border: 1.5px solid ${BILI_BLUE};
+    border-radius: 4px;
+    padding: 4px 6px;
+    font-size: 12px;
+    color: #18191C;
+    outline: none;
+    width: 80px;
+    background: #fff;
+    font-family: inherit;
   }
+
   .bsp-error {
-    font-size: 12px; color: #F25D43; padding: 0 4px;
+    font-size: 11px;
+    color: #F25D43;
+    padding: 0 4px;
     flex-shrink: 0;
   }
   .bsp-error[hidden] { display: none; }
@@ -246,7 +307,8 @@ const PANEL_TEMPLATE = `
 <div class="bsp-panel">
   <div class="bsp-section bsp-not-joined">
     <button class="bsp-btn bsp-btn-primary bsp-create-btn" type="button">创建房间</button>
-    <input class="bsp-join-input" type="text" placeholder="输入邀请码加入" />
+    <input class="bsp-join-input" type="text" placeholder="输入邀请码" />
+    <button class="bsp-btn bsp-btn-primary bsp-join-btn" type="button" style="padding:5px 10px;">加入</button>
     <span class="bsp-error" hidden></span>
     <div class="bsp-profile bsp-profile-notjoined">
       <span class="bsp-profile-avatar"></span>
@@ -254,11 +316,11 @@ const PANEL_TEMPLATE = `
     </div>
   </div>
   <div class="bsp-section bsp-joined" hidden>
-    <button class="bsp-btn bsp-btn-primary bsp-sync-btn" type="button">同步当前页</button>
+    <button class="bsp-btn bsp-btn-primary bsp-sync-btn" type="button">同步</button>
     <div class="bsp-room-info">
       <span class="bsp-room-name"></span>
-      <code class="bsp-room-code"></code>
-      <button class="bsp-btn-ghost bsp-copy-btn" type="button">复制</button>
+      <span class="bsp-room-code"></span>
+      <button class="bsp-btn-ghost bsp-copy-btn" type="button" style="padding:3px 5px;">复制</button>
       <button class="bsp-btn-danger bsp-leave-btn" type="button">退出</button>
     </div>
     <span class="bsp-error" hidden></span>
@@ -270,8 +332,8 @@ const PANEL_TEMPLATE = `
   </div>
   <div class="bsp-name-editor" hidden>
     <input class="bsp-name-input" type="text" maxlength="${MAX_NAME_LENGTH}" />
-    <button class="bsp-btn bsp-btn-primary bsp-name-ok" type="button" style="padding:4px 10px;">OK</button>
-    <button class="bsp-btn-ghost bsp-name-cancel" type="button">X</button>
+    <button class="bsp-btn bsp-btn-primary bsp-name-ok" type="button" style="padding:5px 8px;">OK</button>
+    <button class="bsp-btn-ghost bsp-name-cancel" type="button" style="padding:5px 6px;">X</button>
   </div>
 </div>
 `;
@@ -314,14 +376,27 @@ export function createRoomPanelController(args: {
     if (!host) {
       return;
     }
+    if (mountPoint.classList.contains("toolbar-left")) {
+      // Insert after toolbar-left, before toolbar-right (the three-dot menu).
+      const parent = mountPoint.parentElement;
+      if (parent) {
+        const toolbarRight = parent.querySelector(".toolbar-right");
+        if (toolbarRight) {
+          parent.insertBefore(host, toolbarRight);
+        } else {
+          parent.appendChild(host);
+        }
+      }
+      return;
+    }
     if (
       mountPoint.classList.contains("video-info-container") ||
       mountPoint.classList.contains("video-info-detail")
     ) {
       mountPoint.insertBefore(host, mountPoint.firstChild);
-    } else {
-      mountPoint.insertAdjacentElement("afterend", host);
+      return;
     }
+    mountPoint.insertAdjacentElement("afterend", host);
   }
 
   function ensureMounted(): void {
@@ -345,7 +420,11 @@ export function createRoomPanelController(args: {
     if (!host) {
       host = document.createElement("div");
       host.className = "bsp-room-panel-host";
-      host.style.width = "100%";
+      host.style.width = "fit-content";
+      host.style.maxWidth = "100%";
+      host.style.marginLeft = "8px";
+      host.style.display = "inline-block";
+      host.style.verticalAlign = "middle";
       const shadow = host.attachShadow({ mode: "open" });
       setShadowRootTemplate(shadow, PANEL_TEMPLATE);
       bindEvents(shadow);
@@ -372,6 +451,7 @@ export function createRoomPanelController(args: {
     const createBtn =
       shadow.querySelector<HTMLButtonElement>(".bsp-create-btn");
     const joinInput = shadow.querySelector<HTMLInputElement>(".bsp-join-input");
+    const joinBtn = shadow.querySelector<HTMLButtonElement>(".bsp-join-btn");
     const syncBtn = shadow.querySelector<HTMLButtonElement>(".bsp-sync-btn");
     const copyBtn = shadow.querySelector<HTMLButtonElement>(".bsp-copy-btn");
     const leaveBtn = shadow.querySelector<HTMLButtonElement>(".bsp-leave-btn");
@@ -391,6 +471,11 @@ export function createRoomPanelController(args: {
     joinInput?.addEventListener("keydown", (e) => {
       if (e.key === "Enter") {
         e.preventDefault();
+        void handleJoinRoom(joinInput.value);
+      }
+    });
+    joinBtn?.addEventListener("click", () => {
+      if (joinInput) {
         void handleJoinRoom(joinInput.value);
       }
     });
@@ -460,6 +545,7 @@ export function createRoomPanelController(args: {
     const createBtn =
       shadow.querySelector<HTMLButtonElement>(".bsp-create-btn");
     const joinInput = shadow.querySelector<HTMLInputElement>(".bsp-join-input");
+    const joinBtn = shadow.querySelector<HTMLButtonElement>(".bsp-join-btn");
     const errorEl = shadow.querySelector<HTMLSpanElement>(
       ".bsp-not-joined .bsp-error",
     );
@@ -476,13 +562,16 @@ export function createRoomPanelController(args: {
     if (joinInput) {
       joinInput.disabled = state.pending === "join";
     }
+    if (joinBtn) {
+      joinBtn.disabled = state.pending === "join";
+    }
     if (avatar) {
       const name = state.displayName ?? "Guest";
       avatar.textContent = getInitials(name);
       avatar.style.background = BILI_BLUE;
     }
     if (nick) {
-      nick.textContent = state.displayName ?? "Click to set name";
+      nick.textContent = state.displayName ?? "set name";
     }
     if (errorEl) {
       if (state.error) {
@@ -497,7 +586,7 @@ export function createRoomPanelController(args: {
   function renderJoined(shadow: ShadowRoot): void {
     const syncBtn = shadow.querySelector<HTMLButtonElement>(".bsp-sync-btn");
     const roomName = shadow.querySelector<HTMLSpanElement>(".bsp-room-name");
-    const roomCode = shadow.querySelector<HTMLElement>(".bsp-room-code");
+    const roomCode = shadow.querySelector<HTMLSpanElement>(".bsp-room-code");
     const copyBtn = shadow.querySelector<HTMLButtonElement>(".bsp-copy-btn");
     const leaveBtn = shadow.querySelector<HTMLButtonElement>(".bsp-leave-btn");
     const membersEl = shadow.querySelector<HTMLDivElement>(".bsp-members");
@@ -520,8 +609,8 @@ export function createRoomPanelController(args: {
 
     const sharedVideo = state.roomState?.sharedVideo;
     const roomNameText = sharedVideo?.title
-      ? truncate(sharedVideo.title, 15)
-      : `${state.displayName ?? "My"} room`;
+      ? truncate(sharedVideo.title, 10)
+      : "SyncPlay";
     if (roomName) {
       roomName.textContent = roomNameText;
     }
@@ -532,7 +621,7 @@ export function createRoomPanelController(args: {
     if (membersEl && state.roomState) {
       const members = state.roomState.members;
       const children: HTMLElement[] = [];
-      for (const m of members.slice(0, 8)) {
+      for (const m of members.slice(0, 6)) {
         const el = document.createElement("div");
         el.className = "bsp-member-avatar";
         if (m.id === state.memberId) {
@@ -560,7 +649,7 @@ export function createRoomPanelController(args: {
         : BILI_BLUE;
     }
     if (nick) {
-      nick.textContent = state.displayName ?? "Click to set name";
+      nick.textContent = state.displayName ?? "me";
     }
 
     if (errorEl) {
@@ -577,13 +666,9 @@ export function createRoomPanelController(args: {
     state.pending = "create";
     render();
     try {
-      const resp = await args.runtimeSendMessage<{
-        ok: boolean;
-        error?: string;
-      }>({ type: "content:create-room" });
-      if (resp && !resp.ok) {
-        showError(resp.error ?? "Failed");
-      }
+      await args.runtimeSendMessage({ type: "content:create-room" });
+      // Force a re-fetch so state.joinToken reflects the freshly created room
+      void fetchInitialState();
     } catch (e) {
       showError(e instanceof Error ? e.message : "Failed");
     } finally {
@@ -741,7 +826,7 @@ export function createRoomPanelController(args: {
         render();
       }
     } catch {
-      // Background may not be ready; apply-room-state will update later
+      // ignore
     }
   }
 
