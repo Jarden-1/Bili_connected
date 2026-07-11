@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import {
   normalizeBilibiliUrl,
   type ClientMessage,
@@ -17,6 +16,7 @@ import {
   ROOM_HAS_NO_SHARED_VIDEO_MESSAGE,
   ROOM_NOT_FOUND_MESSAGE,
 } from "./messages.js";
+import { createJoinAdmissionLock } from "./join-admission-lock.js";
 import {
   createPlaybackAuthorityTracker,
   decidePlaybackAcceptance,
@@ -41,10 +41,6 @@ import type {
 
 const MAX_VERSION_RETRIES = 3;
 const ROOM_LAST_ACTIVE_WRITE_INTERVAL_MS = 30_000;
-const JOIN_ADMISSION_LOCK_KEY = "join-admission";
-const JOIN_ADMISSION_LOCK_TTL_MS = 30_000;
-const JOIN_ADMISSION_LOCK_MAX_WAIT_MS = 5_000;
-const JOIN_ADMISSION_LOCK_RETRY_INTERVAL_MS = 25;
 
 type ServiceErrorReason =
   | "room_not_found"
@@ -86,15 +82,6 @@ type JoinIdentity = {
 type PersistJoinedRoomResult = {
   room: PersistedRoom;
   joinTargetState: JoinTargetState;
-};
-
-type JoinAdmissionLock = {
-  token: string;
-  expiresAt: number;
-};
-
-type JoinAdmissionLockGuard = {
-  assertActive: () => void;
 };
 
 type JoinedSessionSnapshot = {
@@ -194,115 +181,31 @@ export function createRoomService(options: {
       Promise.resolve(
         runtimeStore.isMemberTokenBlocked(roomCode, memberToken, currentTime),
       ));
-  const roomJoinLocks = new Map<string, Promise<void>>();
-
-  async function acquireDistributedJoinLock(
-    roomCode: string,
-  ): Promise<JoinAdmissionLock | null> {
-    const deadline = now() + JOIN_ADMISSION_LOCK_MAX_WAIT_MS;
-    while (true) {
-      const expiresAt = now() + JOIN_ADMISSION_LOCK_TTL_MS;
-      const token = randomUUID();
-      if (
-        await runtimeStore.acquireRoomLock(
-          roomCode,
-          JOIN_ADMISSION_LOCK_KEY,
-          token,
-          expiresAt,
-        )
-      ) {
-        return { token, expiresAt };
-      }
-      if (now() >= deadline) {
-        return null;
-      }
-      await new Promise((resolve) =>
-        setTimeout(resolve, JOIN_ADMISSION_LOCK_RETRY_INTERVAL_MS),
-      );
-    }
-  }
-
-  function createJoinAdmissionLockExpiredError(
-    roomCode: string,
-  ): RoomServiceError {
-    return new RoomServiceError(
-      "internal_error",
-      INTERNAL_SERVER_ERROR_MESSAGE,
-      "internal_error",
-      { roomCode, reason: "join_admission_lock_expired" },
-    );
-  }
-
-  async function withRoomJoinLock<T>(
-    roomCode: string,
-    action: (lock: JoinAdmissionLockGuard) => Promise<T>,
-  ): Promise<T> {
-    const previous = roomJoinLocks.get(roomCode) ?? Promise.resolve();
-    let releaseNext: () => void = () => undefined;
-    const next = new Promise<void>((resolve) => {
-      releaseNext = resolve;
-    });
-    const tail = previous.catch(() => undefined).then(() => next);
-    roomJoinLocks.set(roomCode, tail);
-
-    function releaseInProcessLock(): void {
-      releaseNext();
-      if (roomJoinLocks.get(roomCode) === tail) {
-        roomJoinLocks.delete(roomCode);
-      }
-    }
-
-    let distributedLock: JoinAdmissionLock | null = null;
-    try {
-      await previous.catch(() => undefined);
-      distributedLock = await acquireDistributedJoinLock(roomCode);
-      if (!distributedLock) {
-        logEvent("room_join_admission_lock_unavailable", {
-          roomCode,
-          result: "rejected",
-          reason: "join_admission_lock_timeout",
-        });
-        throw new RoomServiceError(
+  // Per-room join admission serialization (in-process queue + cross-node
+  // distributed lock) lives in its own module. It throws RoomServiceError via
+  // the injected error factories so this closure stays the single owner of the
+  // error type without a circular import.
+  const joinAdmissionLock = createJoinAdmissionLock({
+    runtimeStore,
+    now,
+    logEvent,
+    errors: {
+      lockTimeout: (roomCode) =>
+        new RoomServiceError(
           "internal_error",
           INTERNAL_SERVER_ERROR_MESSAGE,
           "internal_error",
           { roomCode, reason: "join_admission_lock_timeout" },
-        );
-      }
-
-      const lockGuard: JoinAdmissionLockGuard = {
-        assertActive: () => {
-          if (!distributedLock || now() >= distributedLock.expiresAt) {
-            throw createJoinAdmissionLockExpiredError(roomCode);
-          }
-        },
-      };
-
-      return await action(lockGuard);
-    } finally {
-      if (distributedLock) {
-        if (now() < distributedLock.expiresAt) {
-          try {
-            await runtimeStore.releaseRoomLock(
-              roomCode,
-              JOIN_ADMISSION_LOCK_KEY,
-              distributedLock.token,
-            );
-          } catch {
-            // Lock will expire via TTL.
-          }
-        } else {
-          logEvent("room_join_admission_lock_ttl_exceeded", {
-            roomCode,
-            result: "rejected",
-            reason: "join_admission_lock_ttl_exceeded",
-            ttlMs: JOIN_ADMISSION_LOCK_TTL_MS,
-          });
-        }
-      }
-      releaseInProcessLock();
-    }
-  }
+        ),
+      lockExpired: (roomCode) =>
+        new RoomServiceError(
+          "internal_error",
+          INTERNAL_SERVER_ERROR_MESSAGE,
+          "internal_error",
+          { roomCode, reason: "join_admission_lock_expired" },
+        ),
+    },
+  });
 
   function setSessionDisplayName(
     session: Session,
@@ -953,7 +856,7 @@ export function createRoomService(options: {
       setSessionDisplayName(session, displayName);
       await leaveCurrentRoom(session);
 
-      return withRoomJoinLock(roomCode, async (lock) => {
+      return joinAdmissionLock.withLock(roomCode, async (lock) => {
         const joined = await persistJoinedRoom({
           session,
           roomCode,
