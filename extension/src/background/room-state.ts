@@ -157,6 +157,16 @@ export function resetRoomLifecycleTransientState(
       cleanup.nextState.pendingLocalShareTimer;
   }
   args.shareState.pendingShareToast = null;
-  args.roomSessionState.pendingSharedVideo = null;
-  args.roomSessionState.pendingSharedPlayback = null;
+  // For create-room we intentionally KEEP any pending shared video: the caller
+  // (handleContentCreateRoom / handlePopupCreateRoom) stages the current tab's
+  // video into pendingSharedVideo right before requesting room creation,
+  // expecting it to be flushed once room:created arrives. Clearing it here (as
+  // we do for join/leave) is exactly what made "create room auto-syncs the
+  // currently open video" silently fail. join-room does NOT stage (joining a
+  // room means receiving the host's video), and leave-room has no room to flush
+  // into, so both still drop the pending share to avoid a stale re-send.
+  if (action !== "create-room") {
+    args.roomSessionState.pendingSharedVideo = null;
+    args.roomSessionState.pendingSharedPlayback = null;
+  }
 }

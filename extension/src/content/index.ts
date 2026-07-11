@@ -268,6 +268,11 @@ async function init(): Promise<void> {
 
       if (message.type === "background:sync-status") {
         roomStateController.handleSyncStatus(message.payload);
+        // Drive the danmaku "发送到房间" affordance off room membership: it is
+        // only shown while we are actually in a room (roomCode present).
+        danmakuChatController.setRoomActive(
+          message.payload.roomCode !== null && message.payload.connected,
+        );
         return false;
       }
 

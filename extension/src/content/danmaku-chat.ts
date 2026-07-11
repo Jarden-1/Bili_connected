@@ -1,8 +1,19 @@
 /**
- * Danmaku chat — a "发送至房间" button injected next to Bilibili's danmaku
- * send button. Clicking the button sends the current input text to the
- * room directly (no mode switching — the Bilibili input box is left
- * untouched so the user can still send regular danmaku with Enter).
+ * Danmaku chat — lets the user send text to everyone in the room from the
+ * Bilibili video page. Two rendering modes are chosen automatically based on
+ * whether Bilibili's native danmaku input is currently usable:
+ *
+ *   1. Parasite mode (danmaku on): a pink "发送到房间" button is butted flush
+ *      against Bilibili's own send button, reading as one seamless pill. The
+ *      native input box is left untouched so regular danmaku still works.
+ *   2. Overlay mode (danmaku off): Bilibili hides/collapses its own input, so
+ *      we float a visually-matched input box over the native sending-area
+ *      container (falling back to the player's bottom-right corner if that
+ *      container can't be located). This mimics "typing in the original box".
+ *
+ * Both modes only appear while the user is actually in a room — the controller
+ * is told about room membership via setRoomActive(). Outside a room, no
+ * "发送到房间" affordance is shown at all.
  *
  * Incoming room:chat messages render as colored scrolling danmaku on top of
  * the video player (per-user color + border + nickname prefix).
@@ -16,6 +27,12 @@ type RuntimeSendMessage = <T>(
 
 export interface DanmakuChatController {
   start(): void;
+  /**
+   * Tells the controller whether the user is currently in a room. The
+   * "发送到房间" button / overlay input is only shown while active === true;
+   * turning it off tears down whichever input mode is currently mounted.
+   */
+  setRoomActive(active: boolean): void;
   handleRoomChat(payload: {
     memberId: string;
     displayName: string;
@@ -65,14 +82,15 @@ const VIDEO_AREA_SELECTORS = [
   ".bilibili-player",
 ];
 
-// Where to anchor our standalone room-chat input when Bilibili's native danmaku
-// input is unavailable (danmaku turned off). We prefer the player control bar
-// so the input sits in the same visual region as the native one would.
-const CONTROL_BAR_SELECTORS = [
-  ".bpx-player-control-bottom",
-  ".bpx-player-controls",
+// Native danmaku "sending area" container — the box that holds the input +
+// send button. When danmaku is turned off Bilibili hides/collapses the input
+// *inside* this container, but the container itself usually keeps its slot in
+// the control bar. We overlay our own input on top of this container so it
+// reads as "the original input box". Ordered most-specific first.
+const SENDING_AREA_SELECTORS = [
   ".bpx-player-sending-area",
-  ".bpx-player-control-wrap",
+  ".bpx-player-dm-wrap",
+  ".bpx-player-video-inputbar",
 ];
 
 // Detects whether Bilibili's native danmaku input is truly usable right now.
@@ -172,11 +190,20 @@ export function createDanmakuChatController(args: {
   // it on unmount. While our "发送到房间" button is attached we square off the
   // send button's right corners so the two controls read as one seamless pill.
   let sendBtnOriginalBorderRadius: string | null = null;
-  // Standalone room-chat input, mounted only when Bilibili's native danmaku
-  // input is unavailable (danmaku turned off). This guarantees the user can
-  // always type and send to the room regardless of the danmaku on/off state.
-  let standaloneHost: HTMLDivElement | null = null;
-  let standaloneInput: HTMLInputElement | null = null;
+  // Overlay room-chat input, mounted only when Bilibili's native danmaku input
+  // is unavailable (danmaku turned off). It is positioned over the native
+  // sending-area container (or the player's bottom-right corner as a fallback)
+  // so it reads like typing in the original box. Guarantees the user can always
+  // send to the room regardless of the danmaku on/off state.
+  let overlayInputHost: HTMLDivElement | null = null;
+  let overlayInput: HTMLInputElement | null = null;
+  // Container we anchored the overlay input to, plus the observer/handlers that
+  // keep the overlay glued to it as the layout changes. Cleared on teardown.
+  let overlayAnchor: HTMLElement | null = null;
+  let overlayInputResizeObserver: ResizeObserver | null = null;
+  // Whether the user is currently in a room. No "发送到房间" affordance is
+  // shown while this is false.
+  let roomActive = false;
   let started = false;
   let mountTimer = 0;
   let danmakuCount = 0;
@@ -250,28 +277,37 @@ export function createDanmakuChatController(args: {
     if (!started) {
       return;
     }
+
+    // No room → no "发送到房间" affordance at all. Tear down whichever mode is
+    // mounted and stop. (The overlay danmaku display is independent and stays.)
+    if (!roomActive) {
+      teardownParasiteButton();
+      teardownOverlayInput();
+      return;
+    }
+
     const input = querySelector(INPUT_SELECTORS);
     const sendBtn = querySelector(SEND_BTN_SELECTORS);
 
     // Decide which mode to use. When Bilibili's native danmaku input is usable
     // (danmaku on), we piggy-back on it (parasite mode). When it is missing or
-    // disabled (danmaku off), we mount our own standalone input so the user can
-    // still send to the room. We re-evaluate on every mount check so toggling
-    // danmaku on/off flips between the two modes automatically.
+    // disabled (danmaku off), we float our own overlay input over the native
+    // sending-area so the user can still send to the room. We re-evaluate on
+    // every mount check so toggling danmaku on/off flips modes automatically.
     const nativeUsable = isElementUsable(input) && isElementUsable(sendBtn);
 
     if (!nativeUsable) {
       // Native input unavailable — tear down parasite UI (restoring the send
-      // button corners) and switch to our standalone input.
+      // button corners) and switch to our overlay input.
       teardownParasiteButton();
-      ensureStandaloneInputMounted();
+      ensureOverlayInputMounted();
       scheduleMountCheck();
       return;
     }
 
-    // Native input is usable — make sure any standalone fallback is removed so
-    // we never show two inputs at once, then (re)attach the parasite button.
-    teardownStandaloneInput();
+    // Native input is usable — make sure any overlay fallback is removed so we
+    // never show two inputs at once, then (re)attach the parasite button.
+    teardownOverlayInput();
 
     if (inputEl !== input) {
       inputEl = (input as HTMLTextAreaElement | HTMLInputElement) ?? null;
@@ -375,54 +411,63 @@ export function createDanmakuChatController(args: {
     inputEl = null;
   }
 
-  // Mounts our own standalone room-chat input + send button, used when the
-  // native danmaku input is off/unavailable. It sits in the player control bar
-  // (or, as a last resort, floats bottom-right of the video area) so the user
-  // can always type and send to the room. Idempotent: no-op if already mounted.
-  function ensureStandaloneInputMounted(): void {
-    if (standaloneHost?.isConnected) {
+  // Mounts our overlay room-chat input, used when the native danmaku input is
+  // off/unavailable. Strategy: locate Bilibili's native sending-area container
+  // and float a visually-matched input+button *over* it (position:fixed, glued
+  // to the container's rect) so it reads like typing in the original box. If
+  // that container can't be located (e.g. Bilibili collapsed it entirely), we
+  // fall back to a small bar floating at the video player's bottom-right.
+  // Idempotent: no-op if already mounted.
+  function ensureOverlayInputMounted(): void {
+    if (overlayInputHost?.isConnected) {
       return;
     }
-    const controlBar = querySelector(CONTROL_BAR_SELECTORS);
-    const videoArea = querySelector(VIDEO_AREA_SELECTORS);
-    const mountTarget = controlBar ?? videoArea;
-    if (!mountTarget) {
-      // Nowhere to mount yet (player not ready); the periodic check retries.
+    const sendingArea = querySelector(SENDING_AREA_SELECTORS);
+    const anchor = isElementUsable(sendingArea)
+      ? sendingArea
+      : querySelector(VIDEO_AREA_SELECTORS);
+    if (!anchor) {
+      // Nothing to anchor to yet (player not ready); the periodic check retries.
       return;
     }
+    // Whether we managed to sit over the real native input slot, or had to fall
+    // back to the player corner. Drives positioning + a subtle style tweak.
+    const overNativeSlot = isElementUsable(sendingArea);
 
-    standaloneHost = document.createElement("div");
-    standaloneHost.className = "bsp-standalone-chat";
-    Object.assign(standaloneHost.style, {
+    overlayInputHost = document.createElement("div");
+    overlayInputHost.className = "bsp-overlay-chat";
+    // position:fixed + viewport coordinates so we never mutate Bilibili's own
+    // inline styles (mutating them previously broke the page's rendering).
+    Object.assign(overlayInputHost.style, {
+      position: "fixed",
       display: "inline-flex",
       alignItems: "center",
       gap: "0",
-      verticalAlign: "middle",
-      margin: "0 8px",
-      height: "28px",
-      zIndex: "80",
+      height: "32px",
+      zIndex: "100",
+      boxSizing: "border-box",
     } as CSSStyleDeclaration);
 
-    standaloneInput = document.createElement("input");
-    standaloneInput.type = "text";
-    standaloneInput.placeholder = "发送到房间";
-    standaloneInput.maxLength = 500;
-    Object.assign(standaloneInput.style, {
-      height: "28px",
-      width: "150px",
+    overlayInput = document.createElement("input");
+    overlayInput.type = "text";
+    overlayInput.placeholder = "发送到房间（弹幕已关闭）";
+    overlayInput.maxLength = 500;
+    Object.assign(overlayInput.style, {
+      height: "100%",
+      flex: "1 1 auto",
+      minWidth: "0",
       border: "1px solid rgba(255,255,255,0.35)",
       borderRight: "none",
-      borderRadius: "4px 0 0 4px",
-      padding: "0 10px",
+      borderRadius: "6px 0 0 6px",
+      padding: "0 12px",
       fontSize: "13px",
-      lineHeight: "28px",
       color: "#fff",
-      background: "rgba(0,0,0,0.35)",
+      background: "rgba(20,20,20,0.72)",
       outline: "none",
       fontFamily: "inherit",
       boxSizing: "border-box",
     } as CSSStyleDeclaration);
-    standaloneInput.addEventListener("keydown", (e) => {
+    overlayInput.addEventListener("keydown", (e) => {
       if (e.key === "Enter") {
         e.preventDefault();
         e.stopPropagation();
@@ -435,14 +480,14 @@ export function createDanmakuChatController(args: {
     btn.textContent = "发送到房间";
     btn.title = "把内容发送给同房间的人（弹幕已关闭时可用）";
     Object.assign(btn.style, {
-      height: "28px",
+      height: "100%",
+      flex: "0 0 auto",
       background: BILI_PINK,
       color: "#fff",
       border: "none",
-      borderRadius: "0 4px 4px 0",
-      padding: "0 12px",
+      borderRadius: "0 6px 6px 0",
+      padding: "0 14px",
       fontSize: "13px",
-      lineHeight: "28px",
       fontWeight: "500",
       cursor: "pointer",
       whiteSpace: "nowrap",
@@ -462,16 +507,74 @@ export function createDanmakuChatController(args: {
       void handleSendToRoom();
     });
 
-    standaloneHost.appendChild(standaloneInput);
-    standaloneHost.appendChild(btn);
-    mountTarget.appendChild(standaloneHost);
+    overlayInputHost.appendChild(overlayInput);
+    overlayInputHost.appendChild(btn);
+    document.body.appendChild(overlayInputHost);
+
+    overlayAnchor = anchor;
+    updateOverlayInputPosition(overNativeSlot);
+
+    // Keep the overlay glued to the anchor as the layout shifts.
+    overlayInputResizeObserver = new ResizeObserver(() =>
+      updateOverlayInputPosition(overNativeSlot),
+    );
+    overlayInputResizeObserver.observe(anchor);
+    window.addEventListener("scroll", handleOverlayInputReflow, {
+      passive: true,
+    });
+    window.addEventListener("resize", handleOverlayInputReflow, {
+      passive: true,
+    });
   }
 
-  // Removes the standalone input. Safe to call repeatedly (no-op if unmounted).
-  function teardownStandaloneInput(): void {
-    standaloneHost?.remove();
-    standaloneHost = null;
-    standaloneInput = null;
+  // Recomputes the overlay input's fixed position from its anchor's rect.
+  // overNativeSlot === true → cover the native sending-area exactly.
+  // overNativeSlot === false → float a compact bar at the player bottom-right.
+  function updateOverlayInputPosition(overNativeSlot: boolean): void {
+    if (!overlayInputHost || !overlayAnchor?.isConnected) {
+      return;
+    }
+    const rect = overlayAnchor.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) {
+      return;
+    }
+    if (overNativeSlot) {
+      // Sit exactly over the native sending-area container.
+      overlayInputHost.style.left = `${rect.left}px`;
+      overlayInputHost.style.top = `${rect.top}px`;
+      overlayInputHost.style.width = `${rect.width}px`;
+      overlayInputHost.style.height = `${rect.height}px`;
+    } else {
+      // Fallback: compact bar pinned to the player's bottom-right corner,
+      // sitting just above the control bar (~48px tall).
+      const width = Math.min(260, Math.max(200, rect.width * 0.35));
+      overlayInputHost.style.width = `${width}px`;
+      overlayInputHost.style.height = "34px";
+      overlayInputHost.style.left = `${rect.right - width - 12}px`;
+      overlayInputHost.style.top = `${rect.bottom - 48 - 34 - 8}px`;
+    }
+  }
+
+  // Reflow handler bound to scroll/resize. Recomputes using the same mode we
+  // mounted with (inferred from whether the anchor is the native sending area).
+  function handleOverlayInputReflow(): void {
+    const overNativeSlot =
+      !!overlayAnchor &&
+      SENDING_AREA_SELECTORS.some((sel) => overlayAnchor?.matches(sel));
+    updateOverlayInputPosition(overNativeSlot);
+  }
+
+  // Removes the overlay input and its observers/listeners. Safe to call
+  // repeatedly (no-op if unmounted).
+  function teardownOverlayInput(): void {
+    overlayInputResizeObserver?.disconnect();
+    overlayInputResizeObserver = null;
+    window.removeEventListener("scroll", handleOverlayInputReflow);
+    window.removeEventListener("resize", handleOverlayInputReflow);
+    overlayInputHost?.remove();
+    overlayInputHost = null;
+    overlayInput = null;
+    overlayAnchor = null;
   }
 
   function getSendButtonHeight(sendBtn: HTMLElement): string {
@@ -529,12 +632,12 @@ export function createDanmakuChatController(args: {
   }
 
   async function handleSendToRoom(): Promise<void> {
-    // Take the value from whichever input is currently active: the standalone
+    // Take the value from whichever input is currently active: the overlay
     // input (danmaku-off mode) takes precedence when mounted, otherwise the
     // native danmaku input (parasite mode). This makes sending work regardless
     // of the danmaku on/off state.
     const activeInput: HTMLInputElement | HTMLTextAreaElement | null =
-      standaloneInput?.isConnected ? standaloneInput : inputEl;
+      overlayInput?.isConnected ? overlayInput : inputEl;
     if (!activeInput) {
       return;
     }
@@ -623,6 +726,15 @@ export function createDanmakuChatController(args: {
       ensureOverlayMounted();
       ensureInputButtonMounted();
     },
+    setRoomActive(active: boolean) {
+      if (roomActive === active) {
+        return;
+      }
+      roomActive = active;
+      // Re-evaluate immediately so the button/overlay appears or disappears
+      // right away instead of waiting for the next periodic mount check.
+      ensureInputButtonMounted();
+    },
     handleRoomChat(payload) {
       showDanmaku(payload);
     },
@@ -637,9 +749,9 @@ export function createDanmakuChatController(args: {
       }
       danmakuItems.length = 0;
       // Tear down both input modes: the parasite button (restoring the native
-      // send button's corners) and the standalone fallback input.
+      // send button's corners) and the overlay fallback input.
       teardownParasiteButton();
-      teardownStandaloneInput();
+      teardownOverlayInput();
       overlayResizeObserver?.disconnect();
       overlayResizeObserver = null;
       window.removeEventListener("scroll", updateOverlayPosition);
