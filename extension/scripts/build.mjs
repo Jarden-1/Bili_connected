@@ -147,7 +147,10 @@ function normalizeExtensionKey(rawValue) {
 function resolveDefaultServerUrl(rawValue) {
   const trimmed = rawValue?.trim();
   if (!trimmed) {
-    return "ws://localhost:8787";
+    // Out-of-the-box default: the project's public relay server. New users
+    // installing the extension land here without configuring anything. Override
+    // at build time with BILI_SYNCPLAY_DEFAULT_SERVER_URL if you self-host.
+    return "ws://14.103.219.42:8787";
   }
 
   let parsedUrl;

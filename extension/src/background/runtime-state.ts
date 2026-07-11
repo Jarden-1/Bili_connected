@@ -10,12 +10,15 @@ import type {
 
 declare const __BILI_SYNCPLAY_DEFAULT_SERVER_URL__: string | undefined;
 
-const LOCALHOST_SERVER_URL = "ws://localhost:8787";
+// Out-of-the-box default: the project's public relay server. Used only when
+// the build-time injection (__BILI_SYNCPLAY_DEFAULT_SERVER_URL__) is absent,
+// which shouldn't happen in shipped builds but keeps dev/typecheck sane.
+const FALLBACK_SERVER_URL = "ws://14.103.219.42:8787";
 
 export const DEFAULT_SERVER_URL =
   typeof __BILI_SYNCPLAY_DEFAULT_SERVER_URL__ === "string"
     ? __BILI_SYNCPLAY_DEFAULT_SERVER_URL__
-    : LOCALHOST_SERVER_URL;
+    : FALLBACK_SERVER_URL;
 export const MAX_RECONNECT_ATTEMPTS = 5;
 export const SHARE_TOAST_TTL_MS = 8000;
 export const BILIBILI_VIDEO_URL_PATTERNS = [
