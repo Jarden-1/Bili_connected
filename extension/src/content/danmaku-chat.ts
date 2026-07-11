@@ -82,21 +82,10 @@ const VIDEO_AREA_SELECTORS = [
   ".bilibili-player",
 ];
 
-// Native danmaku "sending area" container — the box that holds the input +
-// send button. When danmaku is turned off Bilibili hides/collapses the input
-// *inside* this container, but the container itself usually keeps its slot in
-// the control bar. We overlay our own input on top of this container so it
-// reads as "the original input box". Ordered most-specific first.
-const SENDING_AREA_SELECTORS = [
-  ".bpx-player-sending-area",
-  ".bpx-player-dm-wrap",
-  ".bpx-player-video-inputbar",
-];
-
 // Detects whether Bilibili's native danmaku input is truly usable right now.
 // When the user turns danmaku off, Bilibili either removes the input, disables
 // it, or collapses it to zero size — any of which means we can no longer
-// piggy-back on it and must fall back to our own standalone input.
+// piggy-back on it and must fall back to our own overlay input.
 function isElementUsable(el: HTMLElement | null): el is HTMLElement {
   if (!el || !el.isConnected) {
     return false;
@@ -191,15 +180,21 @@ export function createDanmakuChatController(args: {
   // send button's right corners so the two controls read as one seamless pill.
   let sendBtnOriginalBorderRadius: string | null = null;
   // Overlay room-chat input, mounted only when Bilibili's native danmaku input
-  // is unavailable (danmaku turned off). It is positioned over the native
-  // sending-area container (or the player's bottom-right corner as a fallback)
-  // so it reads like typing in the original box. Guarantees the user can always
-  // send to the room regardless of the danmaku on/off state.
-  let overlayInputHost: HTMLDivElement | null = null;
+  // is unavailable (danmaku turned off). To avoid covering video unnecessarily,
+  // it defaults to a small pink dot pinned to the player's bottom-right corner;
+  // clicking the dot expands an input + send button. Enter sends, Esc / outside
+  // click / blur collapses it back to the dot. Guarantees the user can always
+  // send to the room regardless of the danmaku on/off state, in windowed and
+  // fullscreen modes alike.
+  let overlayRoot: HTMLDivElement | null = null;
+  let overlayDot: HTMLButtonElement | null = null;
+  let overlayPanel: HTMLDivElement | null = null;
   let overlayInput: HTMLInputElement | null = null;
-  // Container we anchored the overlay input to, plus the observer/handlers that
-  // keep the overlay glued to it as the layout changes. Cleared on teardown.
-  let overlayAnchor: HTMLElement | null = null;
+  let overlaySendBtn: HTMLButtonElement | null = null;
+  let overlayExpanded = false;
+  // The video area we pin against, plus the observer/handlers that keep the
+  // overlay glued to it as the layout changes (incl. fullscreen toggles).
+  let overlayVideoArea: HTMLElement | null = null;
   let overlayInputResizeObserver: ResizeObserver | null = null;
   // Whether the user is currently in a room. No "发送到房间" affordance is
   // shown while this is false.
@@ -411,58 +406,103 @@ export function createDanmakuChatController(args: {
     inputEl = null;
   }
 
-  // Mounts our overlay room-chat input, used when the native danmaku input is
-  // off/unavailable. Strategy: locate Bilibili's native sending-area container
-  // and float a visually-matched input+button *over* it (position:fixed, glued
-  // to the container's rect) so it reads like typing in the original box. If
-  // that container can't be located (e.g. Bilibili collapsed it entirely), we
-  // fall back to a small bar floating at the video player's bottom-right.
-  // Idempotent: no-op if already mounted.
+  // Mounts our overlay room-chat affordance, used when the native danmaku input
+  // is off/unavailable. It pins to the video player's bottom-right corner so it
+  // works in both windowed and fullscreen modes (fullscreen uses a different
+  // DOM subtree, which is why anchoring to the native sending-area failed
+  // before). To avoid covering video, it starts as a small pink dot; clicking
+  // the dot expands an input + send button. Idempotent: no-op if already mounted.
   function ensureOverlayInputMounted(): void {
-    if (overlayInputHost?.isConnected) {
+    if (overlayRoot?.isConnected) {
       return;
     }
-    const sendingArea = querySelector(SENDING_AREA_SELECTORS);
-    const anchor = isElementUsable(sendingArea)
-      ? sendingArea
-      : querySelector(VIDEO_AREA_SELECTORS);
-    if (!anchor) {
-      // Nothing to anchor to yet (player not ready); the periodic check retries.
+    const videoArea = querySelector(VIDEO_AREA_SELECTORS);
+    if (!videoArea) {
+      // Player not ready yet; the periodic mount check retries.
       return;
     }
-    // Whether we managed to sit over the real native input slot, or had to fall
-    // back to the player corner. Drives positioning + a subtle style tweak.
-    const overNativeSlot = isElementUsable(sendingArea);
 
-    overlayInputHost = document.createElement("div");
-    overlayInputHost.className = "bsp-overlay-chat";
+    overlayRoot = document.createElement("div");
+    overlayRoot.className = "bsp-overlay-chat";
     // position:fixed + viewport coordinates so we never mutate Bilibili's own
     // inline styles (mutating them previously broke the page's rendering).
-    Object.assign(overlayInputHost.style, {
+    Object.assign(overlayRoot.style, {
       position: "fixed",
+      right: "12px",
+      bottom: "56px",
+      zIndex: "100",
+      boxSizing: "border-box",
+    } as CSSStyleDeclaration);
+
+    // --- Collapsed state: a small pink dot. ---
+    overlayDot = document.createElement("button");
+    overlayDot.type = "button";
+    overlayDot.title = "发送到房间（弹幕已关闭）";
+    overlayDot.setAttribute("aria-label", "发送到房间");
+    Object.assign(overlayDot.style, {
+      width: "30px",
+      height: "30px",
+      borderRadius: "50%",
+      background: BILI_PINK,
+      border: "2px solid rgba(255,255,255,0.85)",
+      padding: "0",
+      cursor: "pointer",
       display: "inline-flex",
       alignItems: "center",
+      justifyContent: "center",
+      boxShadow: "0 1px 4px rgba(0,0,0,0.4)",
+      transition: "background 0.15s, transform 0.15s",
+    } as CSSStyleDeclaration);
+    // A simple paper-plane-ish glyph drawn with CSS so we don't need an asset.
+    const dotGlyph = document.createElement("span");
+    dotGlyph.textContent = "✈";
+    dotGlyph.style.cssText =
+      "font-size:14px;color:#fff;line-height:1;pointer-events:none;";
+    overlayDot.appendChild(dotGlyph);
+    overlayDot.addEventListener("mouseenter", () => {
+      if (!overlayDot) {
+        return;
+      }
+      overlayDot.style.background = "#E85A8B";
+      overlayDot.style.transform = "scale(1.08)";
+    });
+    overlayDot.addEventListener("mouseleave", () => {
+      if (!overlayDot) {
+        return;
+      }
+      overlayDot.style.background = BILI_PINK;
+      overlayDot.style.transform = "scale(1)";
+    });
+    overlayDot.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      expandOverlay();
+    });
+
+    // --- Expanded state: input + send button. Hidden until the dot is clicked. ---
+    overlayPanel = document.createElement("div");
+    Object.assign(overlayPanel.style, {
+      display: "none",
+      alignItems: "center",
       gap: "0",
-      height: "32px",
-      zIndex: "100",
+      height: "34px",
       boxSizing: "border-box",
     } as CSSStyleDeclaration);
 
     overlayInput = document.createElement("input");
     overlayInput.type = "text";
-    overlayInput.placeholder = "发送到房间（弹幕已关闭）";
+    overlayInput.placeholder = "发送到房间…";
     overlayInput.maxLength = 500;
     Object.assign(overlayInput.style, {
       height: "100%",
-      flex: "1 1 auto",
-      minWidth: "0",
+      width: "180px",
       border: "1px solid rgba(255,255,255,0.35)",
       borderRight: "none",
       borderRadius: "6px 0 0 6px",
       padding: "0 12px",
       fontSize: "13px",
       color: "#fff",
-      background: "rgba(20,20,20,0.72)",
+      background: "rgba(20,20,20,0.8)",
       outline: "none",
       fontFamily: "inherit",
       boxSizing: "border-box",
@@ -472,16 +512,38 @@ export function createDanmakuChatController(args: {
         e.preventDefault();
         e.stopPropagation();
         void handleSendToRoom();
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+        collapseOverlay();
       }
     });
+    // Collapse when the user clicks elsewhere (so the dot comes back instead of
+    // the panel sitting open over the video forever).
+    overlayInput.addEventListener("blur", (e) => {
+      // Don't collapse if focus moved to our own send button (clicking it would
+      // then re-trigger). Use a microtask so the click on the button lands first.
+      const related = e.relatedTarget as Node | null;
+      if (related === overlaySendBtn) {
+        return;
+      }
+      window.setTimeout(() => {
+        if (
+          overlayExpanded &&
+          overlayInput &&
+          document.activeElement !== overlayInput
+        ) {
+          collapseOverlay();
+        }
+      }, 0);
+    });
 
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.textContent = "发送到房间";
-    btn.title = "把内容发送给同房间的人（弹幕已关闭时可用）";
-    Object.assign(btn.style, {
+    overlaySendBtn = document.createElement("button");
+    overlaySendBtn.type = "button";
+    overlaySendBtn.textContent = "发送";
+    overlaySendBtn.title = "把内容发送给同房间的人";
+    Object.assign(overlaySendBtn.style, {
       height: "100%",
-      flex: "0 0 auto",
       background: BILI_PINK,
       color: "#fff",
       border: "none",
@@ -495,86 +557,103 @@ export function createDanmakuChatController(args: {
       fontFamily: "inherit",
       boxSizing: "border-box",
     } as CSSStyleDeclaration);
-    btn.addEventListener("mouseenter", () => {
-      btn.style.background = "#E85A8B";
+    overlaySendBtn.addEventListener("mouseenter", () => {
+      if (overlaySendBtn) {
+        overlaySendBtn.style.background = "#E85A8B";
+      }
     });
-    btn.addEventListener("mouseleave", () => {
-      btn.style.background = BILI_PINK;
+    overlaySendBtn.addEventListener("mouseleave", () => {
+      if (overlaySendBtn) {
+        overlaySendBtn.style.background = BILI_PINK;
+      }
     });
-    btn.addEventListener("click", (e) => {
+    overlaySendBtn.addEventListener("click", (e) => {
       e.preventDefault();
       e.stopPropagation();
       void handleSendToRoom();
     });
 
-    overlayInputHost.appendChild(overlayInput);
-    overlayInputHost.appendChild(btn);
-    document.body.appendChild(overlayInputHost);
+    overlayPanel.appendChild(overlayInput);
+    overlayPanel.appendChild(overlaySendBtn);
+    overlayRoot.appendChild(overlayDot);
+    overlayRoot.appendChild(overlayPanel);
+    document.body.appendChild(overlayRoot);
 
-    overlayAnchor = anchor;
-    updateOverlayInputPosition(overNativeSlot);
+    overlayVideoArea = videoArea;
+    overlayExpanded = false;
+    updateOverlayInputPosition();
 
-    // Keep the overlay glued to the anchor as the layout shifts.
+    // Keep the overlay pinned to the player's bottom-right as the layout
+    // shifts (resize, fullscreen toggle, SPA navigation).
     overlayInputResizeObserver = new ResizeObserver(() =>
-      updateOverlayInputPosition(overNativeSlot),
+      updateOverlayInputPosition(),
     );
-    overlayInputResizeObserver.observe(anchor);
-    window.addEventListener("scroll", handleOverlayInputReflow, {
+    overlayInputResizeObserver.observe(videoArea);
+    window.addEventListener("scroll", updateOverlayInputPosition, {
       passive: true,
     });
-    window.addEventListener("resize", handleOverlayInputReflow, {
+    window.addEventListener("resize", updateOverlayInputPosition, {
       passive: true,
     });
   }
 
-  // Recomputes the overlay input's fixed position from its anchor's rect.
-  // overNativeSlot === true → cover the native sending-area exactly.
-  // overNativeSlot === false → float a compact bar at the player bottom-right.
-  function updateOverlayInputPosition(overNativeSlot: boolean): void {
-    if (!overlayInputHost || !overlayAnchor?.isConnected) {
+  // Shows the input panel (and hides the dot). Focuses the input so the user
+  // can type immediately.
+  function expandOverlay(): void {
+    if (!overlayDot || !overlayPanel || !overlayInput) {
       return;
     }
-    const rect = overlayAnchor.getBoundingClientRect();
+    overlayExpanded = true;
+    overlayDot.style.display = "none";
+    overlayPanel.style.display = "inline-flex";
+    overlayInput.focus();
+  }
+
+  // Hides the input panel (and brings the dot back). Clears any typed text so a
+  // later expansion starts fresh.
+  function collapseOverlay(): void {
+    if (!overlayDot || !overlayPanel || !overlayInput) {
+      return;
+    }
+    overlayExpanded = false;
+    overlayPanel.style.display = "none";
+    overlayDot.style.display = "inline-flex";
+    overlayInput.value = "";
+  }
+
+  // Repositions the overlay root against the video area's current rect. We stay
+  // glued to the bottom-right corner, sitting just above the control bar. If the
+  // video area can't be measured we just leave the last position in place.
+  function updateOverlayInputPosition(): void {
+    if (!overlayRoot || !overlayVideoArea?.isConnected) {
+      return;
+    }
+    const rect = overlayVideoArea.getBoundingClientRect();
     if (rect.width <= 0 || rect.height <= 0) {
       return;
     }
-    if (overNativeSlot) {
-      // Sit exactly over the native sending-area container.
-      overlayInputHost.style.left = `${rect.left}px`;
-      overlayInputHost.style.top = `${rect.top}px`;
-      overlayInputHost.style.width = `${rect.width}px`;
-      overlayInputHost.style.height = `${rect.height}px`;
-    } else {
-      // Fallback: compact bar pinned to the player's bottom-right corner,
-      // sitting just above the control bar (~48px tall).
-      const width = Math.min(260, Math.max(200, rect.width * 0.35));
-      overlayInputHost.style.width = `${width}px`;
-      overlayInputHost.style.height = "34px";
-      overlayInputHost.style.left = `${rect.right - width - 12}px`;
-      overlayInputHost.style.top = `${rect.bottom - 48 - 34 - 8}px`;
-    }
+    // Sit 12px in from the right edge, 56px up from the bottom (clears the
+    // ~48px control bar + a little breathing room).
+    const right = Math.max(0, window.innerWidth - rect.right) + 12;
+    const bottom = Math.max(0, window.innerHeight - rect.bottom) + 56;
+    overlayRoot.style.right = `${right}px`;
+    overlayRoot.style.bottom = `${bottom}px`;
   }
 
-  // Reflow handler bound to scroll/resize. Recomputes using the same mode we
-  // mounted with (inferred from whether the anchor is the native sending area).
-  function handleOverlayInputReflow(): void {
-    const overNativeSlot =
-      !!overlayAnchor &&
-      SENDING_AREA_SELECTORS.some((sel) => overlayAnchor?.matches(sel));
-    updateOverlayInputPosition(overNativeSlot);
-  }
-
-  // Removes the overlay input and its observers/listeners. Safe to call
-  // repeatedly (no-op if unmounted).
+  // Removes the overlay and its observers/listeners. Safe to call repeatedly.
   function teardownOverlayInput(): void {
     overlayInputResizeObserver?.disconnect();
     overlayInputResizeObserver = null;
-    window.removeEventListener("scroll", handleOverlayInputReflow);
-    window.removeEventListener("resize", handleOverlayInputReflow);
-    overlayInputHost?.remove();
-    overlayInputHost = null;
+    window.removeEventListener("scroll", updateOverlayInputPosition);
+    window.removeEventListener("resize", updateOverlayInputPosition);
+    overlayRoot?.remove();
+    overlayRoot = null;
+    overlayDot = null;
+    overlayPanel = null;
     overlayInput = null;
-    overlayAnchor = null;
+    overlaySendBtn = null;
+    overlayVideoArea = null;
+    overlayExpanded = false;
   }
 
   function getSendButtonHeight(sendBtn: HTMLElement): string {
@@ -654,6 +733,11 @@ export function createDanmakuChatController(args: {
       });
     } catch {
       // ignore
+    }
+    // If we just sent from the expanded overlay, collapse it back to the dot so
+    // it stops covering the video. (Native parasite mode has no collapsed state.)
+    if (activeInput === overlayInput && overlayExpanded) {
+      collapseOverlay();
     }
   }
 
