@@ -37,6 +37,15 @@ export interface ShareController {
     tabId: number | null,
     isAutoShare?: boolean,
   ): Promise<ShareVideoResult>;
+  /**
+   * Stage the given tab's video into the pending-share slots so that the next
+   * `room:created`/`room:joined` flush sends it automatically. Returns true if a
+   * shareable video was staged. Used to make "create room auto-shares the open
+   * video" race-free (no guessed post-create delay).
+   */
+  stagePendingShareFromTab(
+    tab: Pick<chrome.tabs.Tab, "id" | "url"> | null | undefined,
+  ): Promise<boolean>;
   clearPendingLocalShare(reason: string): void;
   expirePendingLocalShareIfNeeded(): void;
   setPendingLocalShare(url: string, isAutoShare?: boolean): void;
@@ -290,6 +299,43 @@ export function createShareController(args: {
     return { ok: true };
   }
 
+  async function stagePendingShareFromTab(
+    tab: Pick<chrome.tabs.Tab, "id" | "url"> | null | undefined,
+  ): Promise<boolean> {
+    // Called right BEFORE a room:create is issued. If the given tab is a
+    // Bilibili video page, stage its video (and current playback) into the
+    // pending-share slots so the existing `flushPendingShare()` — invoked when
+    // `room:created` lands — sends it automatically. This makes "create room
+    // auto-shares the open video" deterministic instead of relying on a guessed
+    // fixed delay that races the async room-creation round trip.
+    // When no tab is supplied (popup path — the popup itself is not a tab), fall
+    // back to the active tab of the current window.
+    const response = tab
+      ? await getVideoPayloadFromTab(tab)
+      : await getActiveVideoPayload();
+    if (!response.ok || !response.payload) {
+      return false;
+    }
+    args.rememberSharedSourceTab(
+      response.tabId ?? undefined,
+      response.payload.video.url,
+    );
+    args.roomSessionState.pendingSharedVideo = response.payload.video;
+    args.roomSessionState.pendingSharedPlayback = response.payload.playback
+      ? {
+          ...response.payload.playback,
+          serverTime: 0,
+          actorId:
+            args.roomSessionState.memberId ?? response.payload.playback.actorId,
+        }
+      : null;
+    args.log(
+      "background",
+      `Staged auto-share for freshly created room ${response.payload.video.url}`,
+    );
+    return true;
+  }
+
   function clearPendingLocalShare(reason: string): void {
     // The marker is being torn down (confirmed, timed out, disconnect, etc.), so
     // it no longer has an owning connection and is no longer an auto-share.
@@ -374,6 +420,7 @@ export function createShareController(args: {
     getActiveVideoPayload,
     getVideoPayloadFromTab,
     queueOrSendSharedVideo,
+    stagePendingShareFromTab,
     clearPendingLocalShare,
     expirePendingLocalShareIfNeeded,
     setPendingLocalShare,

@@ -77,6 +77,9 @@ export function createMessageController(args: {
       tabId: number | null,
       isAutoShare?: boolean,
     ): Promise<QueueSharedVideoResult>;
+    stagePendingShareFromTab(
+      tab: Pick<chrome.tabs.Tab, "id" | "url"> | null | undefined,
+    ): Promise<boolean>;
     hasActivePendingLocalShare(): boolean;
     hasActivePendingManualShare(): boolean;
     getActivePendingLocalShareUrl(): string | null;
@@ -130,6 +133,10 @@ export function createMessageController(args: {
   ): Promise<void> {
     switch (message.type) {
       case "popup:create-room": {
+        // Stage the active tab's video (if any) BEFORE issuing the create, so
+        // the room:created flush auto-shares it. Best-effort: a non-video tab
+        // simply stages nothing and room creation still succeeds.
+        await args.shareController.stagePendingShareFromTab(null);
         await args.roomSessionController.requestCreateRoom();
         // Wait for the asynchronous room:created response to populate
         // roomSessionState.joinToken (up to 5s) so the popup gets the fresh
@@ -700,6 +707,10 @@ export function createMessageController(args: {
         );
         return;
       case "content:create-room":
+        // Stage the requesting page's video (the content script lives on the
+        // Bilibili tab) BEFORE creating, so the room:created flush auto-shares
+        // it. Best-effort: staging nothing never blocks room creation.
+        await args.shareController.stagePendingShareFromTab(sender.tab);
         await args.roomSessionController.requestCreateRoom();
         sendResponse({ ok: true });
         return;

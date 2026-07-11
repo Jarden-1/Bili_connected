@@ -1427,15 +1427,14 @@ export function createPageShareButtonController(args: {
     quickCreatePending = true;
     render();
     try {
+      // The background stages the current page's video into the pending-share
+      // slot before creating, then auto-shares it the moment room:created lands
+      // (race-free, no guessed delay). We just refresh the popover afterwards so
+      // the joined section appears once the room settles.
       await args.runtimeSendMessage({ type: "content:create-room" });
-      // The background resolves the create-room flow once room:created lands.
-      // Wait briefly then auto-share the current video into the fresh room and
-      // refresh the popover so the joined section appears.
       window.setTimeout(() => {
-        void autoShareCurrentVideoAfterCreate().finally(() => {
-          quickCreatePending = false;
-          void refreshPopoverContext();
-        });
+        quickCreatePending = false;
+        void refreshPopoverContext();
       }, QUICK_CREATE_SETTLE_DELAY_MS);
     } catch (error) {
       quickCreatePending = false;
@@ -1445,22 +1444,6 @@ export function createPageShareButtonController(args: {
         }),
       );
       render();
-    }
-  }
-
-  async function autoShareCurrentVideoAfterCreate(): Promise<void> {
-    // After a quick-create, if the current tab is a Bilibili video page, share
-    // it into the freshly created room automatically. The room is guaranteed to
-    // exist here (we just created it), so no confirm is needed. If there is no
-    // playable video, silently do nothing — never block create success.
-    try {
-      const payload = await args.resolveCurrentSharePayload();
-      if (!payload) {
-        return;
-      }
-      await args.runtimeSendMessage({ type: "content:share-current-video" });
-    } catch {
-      // Auto-share is best-effort; swallow errors so create still succeeds.
     }
   }
 

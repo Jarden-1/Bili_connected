@@ -133,6 +133,10 @@ export function createDanmakuChatController(args: {
   let roomButton: HTMLButtonElement | null = null;
   let inputEl: HTMLTextAreaElement | HTMLInputElement | null = null;
   let sendBtnEl: HTMLElement | null = null;
+  // Remembers the send button's original right-side rounding so we can restore
+  // it on unmount. While our "发送到房间" button is attached we square off the
+  // send button's right corners so the two controls read as one seamless pill.
+  let sendBtnOriginalBorderRadius: string | null = null;
   let started = false;
   let mountTimer = 0;
   let danmakuCount = 0;
@@ -231,20 +235,27 @@ export function createDanmakuChatController(args: {
       return;
     }
 
+    // Square off the send button's right corners so our pink button can butt
+    // directly against it and the pair reads as one continuous pill (blue-left
+    // rounded, pink-right rounded, no seam in the middle). We stash the original
+    // radius to restore it when we detach.
+    if (sendBtn instanceof HTMLElement) {
+      if (sendBtnOriginalBorderRadius === null) {
+        sendBtnOriginalBorderRadius = sendBtn.style.borderRadius || "";
+      }
+      sendBtn.style.borderTopRightRadius = "0";
+      sendBtn.style.borderBottomRightRadius = "0";
+    }
+
     roomButton = document.createElement("button");
     roomButton.type = "button";
     roomButton.textContent = "发送到房间";
     roomButton.title = "把当前输入框的内容发送给同房间的人";
-    // Sit flush against the Bilibili send button so the pair reads as a
-    // single connected control. The send button keeps its 4px right-side
-    // rounding, but we tuck our button underneath that corner with a small
-    // negative left margin and a squared left edge in the same pink as our
-    // own background: the rounded corner is "hidden" by our button and the
-    // two surfaces touch without a visible seam. position: relative +
-    // zIndex keeps us on top of the send button's corner when it carries
-    // any decoration (e.g. B 站's mode-switch arrow). A wider right padding
-    // makes the "to room" label clearly longer than "send" without
-    // inflating the height.
+    // Butt flush against the (now square-right) send button with zero gap so the
+    // two surfaces form a single seamless pill: our left edge is squared to meet
+    // the send button, our right edge carries the pill rounding. The vertical
+    // padding mirrors the send button so baselines line up; the wider right
+    // padding lets the longer "发送到房间" label breathe without inflating height.
     Object.assign(roomButton.style, {
       background: BILI_PINK,
       color: "#fff",
@@ -253,7 +264,7 @@ export function createDanmakuChatController(args: {
       padding: sendBtn ? buildAdjacentButtonPadding(sendBtn) : "0 16px 0 12px",
       height: sendBtn ? getSendButtonHeight(sendBtn) : "auto",
       minWidth: "auto",
-      marginLeft: "-4px",
+      marginLeft: "0",
       position: "relative",
       zIndex: "1",
       fontSize: sendBtn ? getSendButtonFontSize(sendBtn) : "12px",
@@ -263,6 +274,9 @@ export function createDanmakuChatController(args: {
       transition: "background 0.15s, opacity 0.15s",
       fontFamily: "inherit",
       lineHeight: sendBtn ? getSendButtonLineHeight(sendBtn) : "normal",
+      verticalAlign: sendBtn
+        ? getComputedStyle(sendBtn).verticalAlign || "middle"
+        : "middle",
     } as CSSStyleDeclaration);
 
     roomButton.addEventListener("mouseenter", () => {
@@ -448,6 +462,14 @@ export function createDanmakuChatController(args: {
       danmakuItems.length = 0;
       roomButton?.remove();
       roomButton = null;
+      // Restore the send button's original right-side rounding we squared off.
+      if (
+        sendBtnEl instanceof HTMLElement &&
+        sendBtnOriginalBorderRadius !== null
+      ) {
+        sendBtnEl.style.borderRadius = sendBtnOriginalBorderRadius;
+      }
+      sendBtnOriginalBorderRadius = null;
       overlayResizeObserver?.disconnect();
       overlayResizeObserver = null;
       window.removeEventListener("scroll", updateOverlayPosition);

@@ -477,6 +477,65 @@ test("accepts a valid sync:pong message", () => {
   );
 });
 
+test("accepts a valid room:chat broadcast message", () => {
+  assert.equal(
+    isServerMessage({
+      type: "room:chat",
+      payload: {
+        roomCode: "1234",
+        member: { id: "member-1", name: "Alice" },
+        text: "hello room",
+        timestamp: 1700000000000,
+      },
+    }),
+    true,
+  );
+});
+
+test("rejects room:chat when text exceeds the max length", () => {
+  assert.equal(
+    isServerMessage({
+      type: "room:chat",
+      payload: {
+        roomCode: "1234",
+        member: { id: "member-1", name: "Alice" },
+        text: "x".repeat(501),
+        timestamp: 1700000000000,
+      },
+    }),
+    false,
+  );
+});
+
+test("rejects room:chat when timestamp is missing", () => {
+  assert.equal(
+    isServerMessage({
+      type: "room:chat",
+      payload: {
+        roomCode: "1234",
+        member: { id: "member-1", name: "Alice" },
+        text: "hello",
+      },
+    }),
+    false,
+  );
+});
+
+test("rejects room:chat when member is malformed", () => {
+  assert.equal(
+    isServerMessage({
+      type: "room:chat",
+      payload: {
+        roomCode: "1234",
+        member: { id: "member-1" },
+        text: "hello",
+        timestamp: 1700000000000,
+      },
+    }),
+    false,
+  );
+});
+
 test("accepts room:created with serverProtocolVersion", () => {
   assert.equal(
     isServerMessage({

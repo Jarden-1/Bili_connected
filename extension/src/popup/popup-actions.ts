@@ -53,16 +53,13 @@ export function bindPopupActions(args: {
       roomActionPending: true,
     });
     try {
+      // The background stages the active tab's video before creating and
+      // auto-shares it the moment room:created lands (race-free), so the popup
+      // no longer needs to trigger a follow-up share here.
       const state = await sendPopupAction({ type: "popup:create-room" });
       args.applyActionState(state);
       void args.sendPopupLog("Create room message resolved");
       patchUiState({ roomActionPending: false });
-      // If the room was created successfully and the active tab is a Bilibili
-      // video page, auto-share it into the fresh room. A missing/invalid video
-      // is not an error here: the create action still succeeded.
-      if (state.roomCode) {
-        await autoShareActiveVideoAfterCreate();
-      }
     } finally {
       if (args.uiStateStore.getState().roomActionPending) {
         patchUiState({ roomActionPending: false });
@@ -282,34 +279,6 @@ export function bindPopupActions(args: {
     event.preventDefault();
     await saveServerUrl();
   });
-
-  async function autoShareActiveVideoAfterCreate(): Promise<void> {
-    // Silent, best-effort share right after creating a room. If the active tab
-    // is not a Bilibili video page (no payload), we simply do nothing — the
-    // room is still created and the user sees no error.
-    let activeVideo;
-    try {
-      activeVideo = await sendPopupActiveVideoQuery();
-    } catch (error) {
-      void args.sendPopupLog(
-        `Auto-share after create skipped: ${error instanceof Error ? error.message : String(error)}`,
-      );
-      return;
-    }
-    if (!activeVideo.ok || !activeVideo.payload) {
-      void args.sendPopupLog(
-        "Auto-share after create skipped: no active video on current tab",
-      );
-      return;
-    }
-    void args.sendPopupLog(
-      "Auto-sharing active video into freshly created room",
-    );
-    await chrome.runtime.sendMessage({ type: "popup:share-current-video" });
-    if (args.getPopupState()) {
-      args.render();
-    }
-  }
 
   async function handleShareCurrentVideo(): Promise<void> {
     const state = args.getPopupState() ?? (await args.queryState());

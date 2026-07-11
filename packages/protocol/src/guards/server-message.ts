@@ -1,5 +1,6 @@
 import type {
   ErrorMessage,
+  RoomChatBroadcastMessage,
   RoomCreatedMessage,
   RoomJoinedMessage,
   RoomMemberJoinedMessage,
@@ -167,6 +168,22 @@ function isSyncPongMessage(value: unknown): value is SyncPongMessage {
   );
 }
 
+const CHAT_TEXT_MAX_LENGTH = 500;
+
+function isRoomChatBroadcastMessage(
+  value: unknown,
+): value is RoomChatBroadcastMessage {
+  return (
+    isRecord(value) &&
+    value.type === "room:chat" &&
+    isRecord(value.payload) &&
+    isRoomCode(value.payload.roomCode) &&
+    isRoomMember(value.payload.member) &&
+    isBoundedString(value.payload.text, CHAT_TEXT_MAX_LENGTH) &&
+    isFiniteNumber(value.payload.timestamp)
+  );
+}
+
 export function isServerMessage(value: unknown): value is ServerMessage {
   if (!isRecord(value) || !isString(value.type)) {
     return false;
@@ -187,6 +204,8 @@ export function isServerMessage(value: unknown): value is ServerMessage {
       return isErrorMessage(value);
     case "sync:pong":
       return isSyncPongMessage(value);
+    case "room:chat":
+      return isRoomChatBroadcastMessage(value);
     default:
       return false;
   }
