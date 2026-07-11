@@ -17,7 +17,10 @@ import {
   ROOM_HAS_NO_SHARED_VIDEO_MESSAGE,
   ROOM_NOT_FOUND_MESSAGE,
 } from "./messages.js";
-import { decidePlaybackAcceptance } from "./playback-authority.js";
+import {
+  createPlaybackAuthorityTracker,
+  decidePlaybackAcceptance,
+} from "./playback-authority.js";
 import {
   createRoomCode,
   roomStateFromSessions,
@@ -36,8 +39,6 @@ import type {
   Session,
 } from "./types.js";
 
-const PLAYBACK_AUTHORITY_WINDOW_MS = 1200;
-const PLAYBACK_AUTHORITY_SWEEP_INTERVAL_MS = 60_000;
 const MAX_VERSION_RETRIES = 3;
 const ROOM_LAST_ACTIVE_WRITE_INTERVAL_MS = 30_000;
 const JOIN_ADMISSION_LOCK_KEY = "join-admission";
@@ -172,7 +173,9 @@ export function createRoomService(options: {
   const runtimeStoreOption = options.runtimeStore ?? options.activeRooms;
   const now = options.now ?? Date.now;
   const nextRoomCode = options.createRoomCode ?? createRoomCode;
-  const playbackAuthorityByRoom = new Map<string, PlaybackAuthority>();
+  // Per-room playback authority window tracking lives in its own module so this
+  // closure no longer has to carry the map + sweep bookkeeping.
+  const playbackAuthority = createPlaybackAuthorityTracker({ now });
 
   if (!runtimeStoreOption) {
     throw new Error("RuntimeStore is required");
@@ -397,96 +400,6 @@ export function createRoomService(options: {
       return null;
     }
     return room;
-  }
-
-  function getPlaybackAuthority(roomCode: string): PlaybackAuthority | null {
-    const authority = playbackAuthorityByRoom.get(roomCode) ?? null;
-    if (!authority) {
-      return null;
-    }
-    if (authority.until <= now()) {
-      playbackAuthorityByRoom.delete(roomCode);
-      return null;
-    }
-    return authority;
-  }
-
-  function derivePlaybackAuthorityKind(args: {
-    currentPlayback: PlaybackState | null;
-    nextPlayback: PlaybackState;
-  }): PlaybackAuthority["kind"] | null {
-    if (!args.currentPlayback) {
-      return "play";
-    }
-    if (
-      args.nextPlayback.playState === "paused" ||
-      args.nextPlayback.playState === "buffering"
-    ) {
-      return "pause";
-    }
-    if (
-      Math.abs(
-        args.nextPlayback.playbackRate - args.currentPlayback.playbackRate,
-      ) > 0.01
-    ) {
-      return "ratechange";
-    }
-    if (
-      args.nextPlayback.syncIntent === "explicit-seek" &&
-      args.nextPlayback.playState === "playing"
-    ) {
-      return "seek";
-    }
-    if (
-      Math.abs(
-        args.nextPlayback.currentTime - args.currentPlayback.currentTime,
-      ) >= 2.5
-    ) {
-      return "seek";
-    }
-    if (
-      args.currentPlayback.playState !== "playing" &&
-      args.nextPlayback.playState === "playing"
-    ) {
-      return "play";
-    }
-    return null;
-  }
-
-  let lastAuthoritySweepAt = 0;
-
-  // getPlaybackAuthority only removes the entry for the room it is asked
-  // about, so authorities of rooms that are deleted (or simply never read
-  // again) would sit in the map forever. Sweeping on record keeps the map
-  // bounded across every room-deletion path without wiring into them.
-  function sweepExpiredPlaybackAuthorities(currentTime: number): void {
-    if (
-      currentTime - lastAuthoritySweepAt <
-      PLAYBACK_AUTHORITY_SWEEP_INTERVAL_MS
-    ) {
-      return;
-    }
-    lastAuthoritySweepAt = currentTime;
-    for (const [roomCode, authority] of playbackAuthorityByRoom) {
-      if (authority.until <= currentTime) {
-        playbackAuthorityByRoom.delete(roomCode);
-      }
-    }
-  }
-
-  function recordPlaybackAuthority(args: {
-    roomCode: string;
-    actorId: string;
-    kind: PlaybackAuthority["kind"];
-    source: PlaybackAuthority["source"];
-  }): void {
-    sweepExpiredPlaybackAuthorities(now());
-    playbackAuthorityByRoom.set(args.roomCode, {
-      actorId: args.actorId,
-      until: now() + PLAYBACK_AUTHORITY_WINDOW_MS,
-      kind: args.kind,
-      source: args.source,
-    });
   }
 
   function requireMemberToken(
@@ -1198,7 +1111,7 @@ export function createRoomService(options: {
             if (!result.ok) {
               return null;
             }
-            recordPlaybackAuthority({
+            playbackAuthority.record({
               roomCode: currentRoom.code,
               actorId: nextPlayback.actorId,
               kind: "share",
@@ -1308,18 +1221,18 @@ export function createRoomService(options: {
         actorId: session.memberId ?? session.id,
         serverTime: currentTime,
       };
-      const authorityKind = derivePlaybackAuthorityKind({
+      const authorityKind = playbackAuthority.deriveKind({
         currentPlayback: access.persistedRoom.playback,
         nextPlayback,
       });
       const acceptance = decidePlaybackAcceptance({
         currentPlayback: access.persistedRoom.playback,
-        authority: getPlaybackAuthority(access.persistedRoom.code),
+        authority: playbackAuthority.get(access.persistedRoom.code),
         incomingPlayback: nextPlayback,
         currentTime,
       });
       if (acceptance.decision !== "accept") {
-        const authority = getPlaybackAuthority(access.persistedRoom.code);
+        const authority = playbackAuthority.get(access.persistedRoom.code);
         logEvent("playback_update_ignored", {
           roomCode: access.persistedRoom.code,
           sessionId: session.id,
@@ -1382,7 +1295,7 @@ export function createRoomService(options: {
       }
 
       if (authorityKind) {
-        recordPlaybackAuthority({
+        playbackAuthority.record({
           roomCode: access.persistedRoom.code,
           actorId: nextPlayback.actorId,
           kind: authorityKind,
@@ -1390,7 +1303,7 @@ export function createRoomService(options: {
         });
       }
 
-      const nextAuthority = getPlaybackAuthority(access.persistedRoom.code);
+      const nextAuthority = playbackAuthority.get(access.persistedRoom.code);
       // Skip steady timeupdate ticks so the admin event store keeps user
       // operations visible without being flooded by ~every-2s broadcasts:
       // log when playState, playbackRate, or syncIntent changes, or when
@@ -1514,7 +1427,7 @@ export function createRoomService(options: {
     },
 
     getPlaybackAuthority(roomCode) {
-      return getPlaybackAuthority(roomCode);
+      return playbackAuthority.get(roomCode);
     },
 
     async getRoomStateByCode(roomCode) {
