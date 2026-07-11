@@ -341,11 +341,15 @@ test("allowAnyChromeExtensionOrigin on: any well-formed chrome-extension origin 
 
   // 朋友以「解压加载」安装时各得随机 chrome-extension://<id>(32 位 a-p)
   assert.deepEqual(
-    security.isOriginAllowed("chrome-extension://fcgbgdmbbgpkeocmhlemfhjpedebhkje"),
+    security.isOriginAllowed(
+      "chrome-extension://fcgbgdmbbgpkeocmhlemfhjpedebhkje",
+    ),
     { ok: true },
   );
   assert.deepEqual(
-    security.isOriginAllowed("chrome-extension://pmlpgjmbpjpjgnbfglodpbbpkmmacmcp"),
+    security.isOriginAllowed(
+      "chrome-extension://pmlpgjmbpjpjgnbfglodpbbpkmmacmcp",
+    ),
     { ok: true },
   );
 });

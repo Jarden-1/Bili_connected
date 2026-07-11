@@ -295,10 +295,7 @@ test("security config parses ALLOW_ANY_FIREFOX_EXTENSION_ORIGIN", () => {
 });
 
 test("security config parses ALLOW_ANY_CHROME_EXTENSION_ORIGIN", () => {
-  assert.equal(
-    loadSecurityConfig({}).allowAnyChromeExtensionOrigin,
-    false,
-  );
+  assert.equal(loadSecurityConfig({}).allowAnyChromeExtensionOrigin, false);
   assert.equal(
     loadSecurityConfig({ ALLOW_ANY_CHROME_EXTENSION_ORIGIN: "true" })
       .allowAnyChromeExtensionOrigin,

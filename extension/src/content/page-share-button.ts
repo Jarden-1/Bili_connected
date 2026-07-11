@@ -325,6 +325,7 @@ export function createPageShareButtonController(args: {
   let quickCreatePending = false;
   let nicknameEditing = false;
   let nicknameInputFocused = false;
+  let nicknameComposing = false;
   let copyButtonState: "idle" | "copied" = "idle";
   let copyButtonResetTimer = 0;
   let joinErrorMessage: string | null = null;
@@ -471,7 +472,12 @@ export function createPageShareButtonController(args: {
     if (nicknameInput) {
       nicknameInput.hidden = !nicknameEditing;
     }
-    if (nicknameInput && nicknameEditing && !nicknameInputFocused) {
+    if (
+      nicknameInput &&
+      nicknameEditing &&
+      !nicknameInputFocused &&
+      !nicknameComposing
+    ) {
       nicknameInput.value = viewModel.displayName ?? "";
     }
     if (membersHeadingEl) {
@@ -771,12 +777,28 @@ export function createPageShareButtonController(args: {
     button?.addEventListener("pointerup", handlePointerUp);
     button?.addEventListener("pointercancel", handlePointerCancel);
     button?.addEventListener("pointerenter", () => showPopover());
-    button?.addEventListener("pointerleave", hidePopoverSoon);
+    button?.addEventListener("pointerleave", () => {
+      // While editing the nickname, never auto-close on pointer leave.
+      // On Windows the IME candidate window is an OS-level surface that can
+      // make Chromium fire a spurious pointerleave, which would otherwise
+      // collapse the popover mid-edit (and then let clicks pass through).
+      if (nicknameEditing) {
+        return;
+      }
+      hidePopoverSoon();
+    });
     button?.addEventListener("focus", () => showPopover());
     popover?.addEventListener("pointerenter", () =>
       showPopover({ refresh: false }),
     );
-    popover?.addEventListener("pointerleave", hidePopoverSoon);
+    popover?.addEventListener("pointerleave", () => {
+      // Mirror the focusout guard: while editing the nickname, never
+      // auto-close on pointer leave. Windows IME can fake a pointerleave.
+      if (nicknameEditing) {
+        return;
+      }
+      hidePopoverSoon();
+    });
     popoverBackdrop?.addEventListener("click", () => hidePopover());
     popoverToggle?.addEventListener("change", (event) => {
       void handleQuickToggleChange(event);
@@ -838,6 +860,12 @@ export function createPageShareButtonController(args: {
     });
     nicknameInput?.addEventListener("blur", () => {
       nicknameInputFocused = false;
+    });
+    nicknameInput?.addEventListener("compositionstart", () => {
+      nicknameComposing = true;
+    });
+    nicknameInput?.addEventListener("compositionend", () => {
+      nicknameComposing = false;
     });
     leaveButton?.addEventListener("click", () => {
       void handleLeaveRoom();
