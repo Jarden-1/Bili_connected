@@ -5,8 +5,7 @@ import type {
 } from "@bili-syncplay/protocol";
 
 export type QueueSharedVideoResult =
-  | { ok: true }
-  | { ok: false; error: string };
+  { ok: true } | { ok: false; error: string };
 
 /**
  * Shared dependency bag threaded through every runtime-message handler. It is

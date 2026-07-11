@@ -21,8 +21,7 @@ export function handlePlaybackUpdate(
         playback: {
           ...message.payload,
           serverTime: 0,
-          actorId:
-            context.roomSessionState.memberId ?? message.payload.actorId,
+          actorId: context.roomSessionState.memberId ?? message.payload.actorId,
         },
       },
     });

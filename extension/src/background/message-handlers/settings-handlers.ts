@@ -1,7 +1,4 @@
-import {
-  pushDisplayNameUpdate,
-  updatePageShareButtonEnabled,
-} from "./context";
+import { pushDisplayNameUpdate, updatePageShareButtonEnabled } from "./context";
 import type { MessageHandlerContext } from "./context";
 import type { PageShareButtonSettingsResponse } from "../../shared/messages";
 

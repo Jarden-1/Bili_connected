@@ -218,9 +218,7 @@ export async function handleAutoShareNextVideo(
   //     (another member shared, the room genuinely advanced past it, …) →
   //     skip so this stale autoplay does not override it.
   const classifyRoomSchedule = ():
-    | "on-scheduled"
-    | "share-in-flight"
-    | "moved-on" => {
+    "on-scheduled" | "share-in-flight" | "moved-on" => {
     const sharedVideo = context.roomSessionState.roomState?.sharedVideo;
     const sharedVideoUrl = sharedVideo?.url ?? null;
     if (
