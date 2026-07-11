@@ -332,3 +332,62 @@ test("allowAnyFirefoxExtensionOrigin on: non-extension origins still gated", () 
     reason: "origin_missing",
   });
 });
+
+test("allowAnyChromeExtensionOrigin on: any well-formed chrome-extension origin allowed", () => {
+  const config = getDefaultSecurityConfig();
+  config.allowedOrigins = [];
+  config.allowAnyChromeExtensionOrigin = true;
+  const security = createSecurityPolicy(config);
+
+  // 朋友以「解压加载」安装时各得随机 chrome-extension://<id>(32 位 a-p)
+  assert.deepEqual(
+    security.isOriginAllowed("chrome-extension://fcgbgdmbbgpkeocmhlemfhjpedebhkje"),
+    { ok: true },
+  );
+  assert.deepEqual(
+    security.isOriginAllowed("chrome-extension://pmlpgjmbpjpjgnbfglodpbbpkmmacmcp"),
+    { ok: true },
+  );
+});
+
+test("allowAnyChromeExtensionOrigin on: malformed chrome-extension still rejected", () => {
+  const config = getDefaultSecurityConfig();
+  config.allowAnyChromeExtensionOrigin = true;
+  const security = createSecurityPolicy(config);
+
+  const bad = [
+    "chrome-extension://fcgbgdmbbgpkeocmhlemfhjpedebhkje/popup.html", // 带路径
+    "chrome-extension://fcgbgdmbbgpkeocmhlemfhjpedebhkje/", // 尾斜杠
+    "chrome-extension://user@fcgbgdmbbgpkeocmhlemfhjpedebhkje", // userinfo
+    "chrome-extension://fcgbgdmbbgpkeocmhlemfhjpedebhkje?x=1", // 查询串
+    "chrome-extension://*", // 通配
+    "chrome-extension://tooshort", // host 非 32 位 a-p
+    "chrome-extension://FCGBGDMBPGPKEOCMHLEMFHJPEDEBHKJE", // 大写非 Chrome 形态
+    "chrome-extension://1234567890abcdefghijklmnopqrstuv", // 含 q-v，非 a-p
+  ];
+  for (const b of bad) {
+    assert.deepEqual(
+      security.isOriginAllowed(b),
+      { ok: false, reason: "origin_not_allowed" },
+      `expected ${b} to be rejected`,
+    );
+  }
+});
+
+test("allowAnyChromeExtensionOrigin on: non-extension origins still gated", () => {
+  const config = getDefaultSecurityConfig();
+  config.allowedOrigins = [];
+  config.allowAnyChromeExtensionOrigin = true;
+  const security = createSecurityPolicy(config);
+
+  // 网页源永远是 http(s)://，开关不放行它们——Origin 防护未被削弱
+  assert.deepEqual(security.isOriginAllowed("https://evil.test"), {
+    ok: false,
+    reason: "origin_not_allowed",
+  });
+  // 缺失 origin 仍走原有 missing 逻辑（与本开关正交）
+  assert.deepEqual(security.isOriginAllowed(null), {
+    ok: false,
+    reason: "origin_missing",
+  });
+});

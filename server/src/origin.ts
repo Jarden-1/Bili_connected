@@ -47,6 +47,25 @@ export function checkBareOrigin(
 
 const MOZ_EXTENSION_ONLY: ReadonlySet<string> = new Set(["moz-extension:"]);
 
+// Chrome 为每个「解压加载(unpacked)」安装分配的内部扩展 ID 是 32 位小写
+// a–p 字母串（base 16 编码的 128-bit，逐字符取自 a..p）。打包上架后的 ID
+// 同样是此形态。不强制校验算法来源，仅收窄到「看起来确实是 Chrome 扩展
+// 源」的纵深防御粒度。注意：这不是鉴权——非浏览器客户端可伪造任意
+// chrome-extension://<id>；真实边界是 room/member token，与此正交。
+const CHROME_EXTENSION_ONLY: ReadonlySet<string> = new Set([
+  "chrome-extension:",
+]);
+const CHROME_EXTENSION_ID = /^[a-p]{32}$/;
+
+// 运行期判定：origin 是否为格式正确的裸 `chrome-extension://<id>`。
+export function isBareChromeExtensionOrigin(origin: string | null): boolean {
+  if (origin === null) {
+    return false;
+  }
+  const result = checkBareOrigin(origin, CHROME_EXTENSION_ONLY);
+  return result.ok && CHROME_EXTENSION_ID.test(result.host);
+}
+
 // Firefox 为每个安装分配的内部 UUID 是标准 UUID 文本形态：小写
 // 8-4-4-4-12 hex（实测如 `2b83faf4-40af-4e98-a9aa-e63c93821add`）。
 // 不强制 version/variant 半字节，避免跨 Firefox 版本生成方式差异时误伤。

@@ -5,7 +5,10 @@ import {
   createWindowCounter,
   WINDOW_MINUTE_MS,
 } from "./rate-limit.js";
-import { isBareMozExtensionOrigin } from "./origin.js";
+import {
+  isBareMozExtensionOrigin,
+  isBareChromeExtensionOrigin,
+} from "./origin.js";
 import type { SecurityConfig, UpgradeDecision } from "./types.js";
 
 type AttemptWindowEntry = {
@@ -124,6 +127,18 @@ export function createSecurityPolicy(config: SecurityConfig): {
     if (
       config.allowAnyFirefoxExtensionOrigin &&
       isBareMozExtensionOrigin(origin)
+    ) {
+      return { ok: true };
+    }
+
+    // 与 Firefox 对称：Chrome 以「解压加载」分发给朋友时，每次安装都会
+    // 随机生成 chrome-extension://<id>，无法预先枚举 ID。开关开启时接受
+    // 任意「格式正确的裸 chrome-extension」origin。同样不削弱边界——网页
+    // 源 scheme 永远是 http(s):，chrome-extension:// 由浏览器结构性保证，
+    // 真正的鉴权是 room/member token + 限流，与此正交。
+    if (
+      config.allowAnyChromeExtensionOrigin &&
+      isBareChromeExtensionOrigin(origin)
     ) {
       return { ok: true };
     }

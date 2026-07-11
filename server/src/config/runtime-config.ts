@@ -33,6 +33,7 @@ type SecurityConfigFile = {
   allowedOrigins?: string[];
   allowMissingOriginInDev?: boolean;
   allowAnyFirefoxExtensionOrigin?: boolean;
+  allowAnyChromeExtensionOrigin?: boolean;
   trustedProxyAddresses?: string[];
   maxConnectionsPerIp?: number;
   connectionAttemptsPerMinute?: number;

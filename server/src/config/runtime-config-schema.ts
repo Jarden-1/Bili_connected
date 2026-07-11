@@ -60,6 +60,11 @@ export const SERVER_CONFIG_FIELDS = [
     "boolean",
   ),
   createField(
+    ["security", "allowAnyChromeExtensionOrigin"],
+    "ALLOW_ANY_CHROME_EXTENSION_ORIGIN",
+    "boolean",
+  ),
+  createField(
     ["security", "trustedProxyAddresses"],
     "TRUSTED_PROXY_ADDRESSES",
     "stringArray",
