@@ -192,9 +192,13 @@ export function createDanmakuChatController(args: {
   let overlayInput: HTMLInputElement | null = null;
   let overlaySendBtn: HTMLButtonElement | null = null;
   let overlayExpanded = false;
-  // The video area we pin against, plus the observer/handlers that keep the
-  // overlay glued to it as the layout changes (incl. fullscreen toggles).
-  let overlayVideoArea: HTMLElement | null = null;
+  // What we pin the overlay to: Bilibili's send button when we can find it
+  // (so the dot sits exactly where the parasite pill would — right of the send
+  // button), falling back to the video area's bottom-right corner when we
+  // can't (e.g. some windowed layouts collapse the send button entirely when
+  // danmaku is off).
+  let overlayAnchor: HTMLElement | null = null;
+  let overlayAnchorIsSendBtn = false;
   let overlayInputResizeObserver: ResizeObserver | null = null;
   // Whether the user is currently in a room. No "发送到房间" affordance is
   // shown while this is false.
@@ -407,29 +411,37 @@ export function createDanmakuChatController(args: {
   }
 
   // Mounts our overlay room-chat affordance, used when the native danmaku input
-  // is off/unavailable. It pins to the video player's bottom-right corner so it
-  // works in both windowed and fullscreen modes (fullscreen uses a different
-  // DOM subtree, which is why anchoring to the native sending-area failed
-  // before). To avoid covering video, it starts as a small pink dot; clicking
-  // the dot expands an input + send button. Idempotent: no-op if already mounted.
+  // is off/unavailable. We try to pin it to Bilibili's own send button so the
+  // dot lands exactly where the parasite pill sits when danmaku is on (right of
+  // the send button) — consistent placement whether danmaku is on or off. If the
+  // send button can't be located we fall back to the video area's bottom-right
+  // corner. Starts as a small pink dot; clicking it expands an input + send
+  // button. Idempotent: no-op if already mounted.
   function ensureOverlayInputMounted(): void {
     if (overlayRoot?.isConnected) {
       return;
     }
+    // Prefer the native send button as the anchor. Even with danmaku off,
+    // Bilibili usually keeps the send button in the DOM (it just stops the
+    // input from accepting text), so we can still read its rect.
+    const sendBtn = querySelector(SEND_BTN_SELECTORS);
     const videoArea = querySelector(VIDEO_AREA_SELECTORS);
-    if (!videoArea) {
+    const anchor = sendBtn ?? videoArea;
+    if (!anchor) {
       // Player not ready yet; the periodic mount check retries.
       return;
     }
+    overlayAnchor = anchor;
+    overlayAnchorIsSendBtn = sendBtn !== null;
 
     overlayRoot = document.createElement("div");
     overlayRoot.className = "bsp-overlay-chat";
     // position:fixed + viewport coordinates so we never mutate Bilibili's own
-    // inline styles (mutating them previously broke the page's rendering).
+    // inline styles (mutating them previously broke the page's rendering). The
+    // exact left/top (or right/bottom in fallback mode) is set by
+    // updateOverlayInputPosition() on every reflow.
     Object.assign(overlayRoot.style, {
       position: "fixed",
-      right: "12px",
-      bottom: "56px",
       zIndex: "100",
       boxSizing: "border-box",
     } as CSSStyleDeclaration);
@@ -579,16 +591,15 @@ export function createDanmakuChatController(args: {
     overlayRoot.appendChild(overlayPanel);
     document.body.appendChild(overlayRoot);
 
-    overlayVideoArea = videoArea;
     overlayExpanded = false;
     updateOverlayInputPosition();
 
-    // Keep the overlay pinned to the player's bottom-right as the layout
-    // shifts (resize, fullscreen toggle, SPA navigation).
+    // Keep the overlay pinned to its anchor as the layout shifts (resize,
+    // fullscreen toggle, SPA navigation, control bar auto-hide in fullscreen).
     overlayInputResizeObserver = new ResizeObserver(() =>
       updateOverlayInputPosition(),
     );
-    overlayInputResizeObserver.observe(videoArea);
+    overlayInputResizeObserver.observe(anchor);
     window.addEventListener("scroll", updateOverlayInputPosition, {
       passive: true,
     });
@@ -621,23 +632,47 @@ export function createDanmakuChatController(args: {
     overlayInput.value = "";
   }
 
-  // Repositions the overlay root against the video area's current rect. We stay
-  // glued to the bottom-right corner, sitting just above the control bar. If the
-  // video area can't be measured we just leave the last position in place.
+  // Repositions the overlay root against its anchor's current rect. When the
+  // anchor is the native send button, the dot sits flush to the button's right
+  // edge, vertically centered — exactly where the parasite pill sits when
+  // danmaku is on, so the affordance stays in the same spot whether danmaku is
+  // on or off. When the anchor is the video area (send button not found), the
+  // dot falls back to the bottom-right corner. Hides the overlay entirely when
+  // the anchor's rect collapses (Bilibili auto-hides the control bar in
+  // fullscreen after a few seconds).
   function updateOverlayInputPosition(): void {
-    if (!overlayRoot || !overlayVideoArea?.isConnected) {
+    if (!overlayRoot || !overlayAnchor?.isConnected) {
       return;
     }
-    const rect = overlayVideoArea.getBoundingClientRect();
+    const rect = overlayAnchor.getBoundingClientRect();
+    // Control bar auto-hidden (fullscreen idle) or player not laid out yet:
+    // hide the overlay so it doesn't float mid-screen.
     if (rect.width <= 0 || rect.height <= 0) {
+      overlayRoot.style.display = "none";
       return;
     }
-    // Sit 12px in from the right edge, 56px up from the bottom (clears the
-    // ~48px control bar + a little breathing room).
-    const right = Math.max(0, window.innerWidth - rect.right) + 12;
-    const bottom = Math.max(0, window.innerHeight - rect.bottom) + 56;
-    overlayRoot.style.right = `${right}px`;
-    overlayRoot.style.bottom = `${bottom}px`;
+    overlayRoot.style.display = "block";
+
+    if (overlayAnchorIsSendBtn) {
+      // Flush to the send button's right edge, vertically centered on it. The
+      // dot is 30px; center it on the button's vertical midpoint.
+      const dotSize = 30;
+      const left = rect.right + 2;
+      const top = rect.top + Math.max(0, (rect.height - dotSize) / 2);
+      overlayRoot.style.left = `${left}px`;
+      overlayRoot.style.top = `${top}px`;
+      overlayRoot.style.right = "auto";
+      overlayRoot.style.bottom = "auto";
+    } else {
+      // Fallback: bottom-right corner of the video area, just above the
+      // control bar (~48px) with a little breathing room.
+      const right = Math.max(0, window.innerWidth - rect.right) + 12;
+      const bottom = Math.max(0, window.innerHeight - rect.bottom) + 56;
+      overlayRoot.style.right = `${right}px`;
+      overlayRoot.style.bottom = `${bottom}px`;
+      overlayRoot.style.left = "auto";
+      overlayRoot.style.top = "auto";
+    }
   }
 
   // Removes the overlay and its observers/listeners. Safe to call repeatedly.
@@ -652,7 +687,8 @@ export function createDanmakuChatController(args: {
     overlayPanel = null;
     overlayInput = null;
     overlaySendBtn = null;
-    overlayVideoArea = null;
+    overlayAnchor = null;
+    overlayAnchorIsSendBtn = false;
     overlayExpanded = false;
   }
 
