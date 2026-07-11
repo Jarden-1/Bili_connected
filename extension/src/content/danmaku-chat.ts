@@ -125,6 +125,26 @@ function querySelector(selectors: string[]): HTMLElement | null {
   return null;
 }
 
+// Where our floating overlays (danmaku display + room-chat dot/input) should be
+// attached. In *native* fullscreen the browser only paints the fullscreen
+// element and its descendants — anything left on document.body is invisible.
+// So while a native fullscreen element exists we parent our overlays inside it;
+// otherwise (windowed, or Bilibili's own "web fullscreen" which keeps the whole
+// page DOM painted) document.body is correct. Returns the deepest fullscreen
+// element so nested fullscreen still resolves to the visible subtree.
+function getOverlayMountTarget(): HTMLElement {
+  const fsEl =
+    (document.fullscreenElement as HTMLElement | null) ??
+    // Safari/older Chromium prefixed property.
+    ((document as unknown as { webkitFullscreenElement?: Element | null })
+      .webkitFullscreenElement as HTMLElement | null) ??
+    null;
+  if (fsEl instanceof HTMLElement) {
+    return fsEl;
+  }
+  return document.body;
+}
+
 const OVERLAY_TEMPLATE = `
 <style>
   :host { all: initial; }
@@ -208,6 +228,20 @@ export function createDanmakuChatController(args: {
   let danmakuCount = 0;
   const danmakuItems: HTMLDivElement[] = [];
 
+  // Entering/leaving native fullscreen changes where our overlays must live
+  // (see getOverlayMountTarget). React immediately rather than waiting for the
+  // next periodic mount check so the danmaku display and pink dot never blink
+  // out during the fullscreen transition.
+  function handleFullscreenChange(): void {
+    if (!started) {
+      return;
+    }
+    ensureOverlayMounted();
+    ensureInputButtonMounted();
+    updateOverlayPosition();
+    updateOverlayInputPosition();
+  }
+
   function ensureOverlayMounted(): void {
     if (!started) {
       return;
@@ -217,7 +251,11 @@ export function createDanmakuChatController(args: {
       scheduleMountCheck();
       return;
     }
-    if (overlayHost?.isConnected) {
+    const mountTarget = getOverlayMountTarget();
+    // Already mounted in the right place — nothing to do. If the fullscreen
+    // state flipped (mount target changed), fall through to re-parent so the
+    // danmaku stays visible inside the fullscreen element.
+    if (overlayHost?.isConnected && overlayHost.parentElement === mountTarget) {
       return;
     }
     if (!overlayHost) {
@@ -233,7 +271,9 @@ export function createDanmakuChatController(args: {
         right: "0",
         bottom: "0",
         pointerEvents: "none",
-        zIndex: "70",
+        // High enough to paint over Bilibili's own fullscreen player UI (its
+        // controls/layers use large z-index values in fullscreen).
+        zIndex: "2147482990",
       });
       const shadow = overlayHost.attachShadow({ mode: "open" });
       const template = document.createElement("template");
@@ -241,7 +281,9 @@ export function createDanmakuChatController(args: {
       shadow.appendChild(template.content.cloneNode(true));
       overlay = shadow.querySelector(".bsp-danmaku-overlay");
     }
-    document.body.appendChild(overlayHost);
+    // Attach to the fullscreen element when one is active (so the danmaku is
+    // painted in fullscreen), otherwise to document.body.
+    mountTarget.appendChild(overlayHost);
     currentVideoArea = videoArea;
     updateOverlayPosition();
     if (overlayResizeObserver) {
@@ -418,7 +460,15 @@ export function createDanmakuChatController(args: {
   // corner. Starts as a small pink dot; clicking it expands an input + send
   // button. Idempotent: no-op if already mounted.
   function ensureOverlayInputMounted(): void {
+    const mountTarget = getOverlayMountTarget();
     if (overlayRoot?.isConnected) {
+      // Already mounted. If the fullscreen state flipped, the dot would be
+      // stranded on document.body (invisible in fullscreen) — re-parent it into
+      // the current mount target while preserving expanded/collapsed state.
+      if (overlayRoot.parentElement !== mountTarget) {
+        mountTarget.appendChild(overlayRoot);
+        updateOverlayInputPosition();
+      }
       return;
     }
     // Prefer the native send button as the anchor. Even with danmaku off,
@@ -442,7 +492,9 @@ export function createDanmakuChatController(args: {
     // updateOverlayInputPosition() on every reflow.
     Object.assign(overlayRoot.style, {
       position: "fixed",
-      zIndex: "100",
+      // Above the danmaku display layer and Bilibili's fullscreen UI so the dot
+      // stays clickable in fullscreen.
+      zIndex: "2147482995",
       boxSizing: "border-box",
     } as CSSStyleDeclaration);
 
@@ -589,7 +641,9 @@ export function createDanmakuChatController(args: {
     overlayPanel.appendChild(overlaySendBtn);
     overlayRoot.appendChild(overlayDot);
     overlayRoot.appendChild(overlayPanel);
-    document.body.appendChild(overlayRoot);
+    // Attach to the fullscreen element when one is active so the dot is painted
+    // in fullscreen too; otherwise document.body.
+    mountTarget.appendChild(overlayRoot);
 
     overlayExpanded = false;
     updateOverlayInputPosition();
@@ -632,23 +686,52 @@ export function createDanmakuChatController(args: {
     overlayInput.value = "";
   }
 
+  // Pins the dot to a fixed bottom-right corner of the viewport. Used in
+  // fullscreen (and whenever the send-button anchor's rect collapses) so the
+  // affordance never blinks out when Bilibili auto-hides its control bar after
+  // a few idle seconds — the whole point of Problem 2 is that the user must
+  // always be able to send in fullscreen.
+  function pinOverlayToViewportCorner(): void {
+    if (!overlayRoot) {
+      return;
+    }
+    overlayRoot.style.display = "block";
+    overlayRoot.style.right = "24px";
+    overlayRoot.style.bottom = "90px";
+    overlayRoot.style.left = "auto";
+    overlayRoot.style.top = "auto";
+  }
+
   // Repositions the overlay root against its anchor's current rect. When the
   // anchor is the native send button, the dot sits flush to the button's right
   // edge, vertically centered — exactly where the parasite pill sits when
   // danmaku is on, so the affordance stays in the same spot whether danmaku is
-  // on or off. When the anchor is the video area (send button not found), the
-  // dot falls back to the bottom-right corner. Hides the overlay entirely when
-  // the anchor's rect collapses (Bilibili auto-hides the control bar in
-  // fullscreen after a few seconds).
+  // on or off. When the send button can't be measured (not found, or its rect
+  // collapsed because Bilibili auto-hid the fullscreen control bar), the dot
+  // falls back to a fixed viewport corner instead of disappearing so the user
+  // can always send in fullscreen.
   function updateOverlayInputPosition(): void {
-    if (!overlayRoot || !overlayAnchor?.isConnected) {
+    if (!overlayRoot) {
+      return;
+    }
+    const fullscreen = getOverlayMountTarget() !== document.body;
+
+    if (!overlayAnchor?.isConnected) {
+      // Anchor gone entirely — keep the dot reachable at the corner.
+      pinOverlayToViewportCorner();
       return;
     }
     const rect = overlayAnchor.getBoundingClientRect();
-    // Control bar auto-hidden (fullscreen idle) or player not laid out yet:
-    // hide the overlay so it doesn't float mid-screen.
+    // Send-button rect collapsed (fullscreen idle control bar) or player not
+    // laid out yet. In fullscreen we must keep the dot visible, so fall back to
+    // the fixed corner rather than hiding. In windowed mode the send button is
+    // persistent, so a zero rect just means "not ready" and we hide briefly.
     if (rect.width <= 0 || rect.height <= 0) {
-      overlayRoot.style.display = "none";
+      if (fullscreen) {
+        pinOverlayToViewportCorner();
+      } else {
+        overlayRoot.style.display = "none";
+      }
       return;
     }
     overlayRoot.style.display = "block";
@@ -843,6 +926,11 @@ export function createDanmakuChatController(args: {
         return;
       }
       started = true;
+      document.addEventListener("fullscreenchange", handleFullscreenChange);
+      document.addEventListener(
+        "webkitfullscreenchange",
+        handleFullscreenChange,
+      );
       ensureOverlayMounted();
       ensureInputButtonMounted();
     },
@@ -860,6 +948,11 @@ export function createDanmakuChatController(args: {
     },
     destroy() {
       started = false;
+      document.removeEventListener("fullscreenchange", handleFullscreenChange);
+      document.removeEventListener(
+        "webkitfullscreenchange",
+        handleFullscreenChange,
+      );
       if (mountTimer) {
         window.clearInterval(mountTimer);
         mountTimer = 0;
