@@ -11,6 +11,8 @@ export interface PopupUiState {
   localStatusMessage: string | null;
   copyRoomSuccess: boolean;
   copyLogsSuccess: boolean;
+  nicknameEditing: boolean;
+  nicknameInputFocused: boolean;
   popupPort: chrome.runtime.Port | null;
 }
 
@@ -28,6 +30,8 @@ export function createPopupUiState(): PopupUiState {
     localStatusMessage: null,
     copyRoomSuccess: false,
     copyLogsSuccess: false,
+    nicknameEditing: false,
+    nicknameInputFocused: false,
     popupPort: null,
   };
 }

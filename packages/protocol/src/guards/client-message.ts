@@ -6,6 +6,7 @@ import type {
   LeaveRoomMessage,
   PlaybackUpdateMessage,
   ProfileUpdateMessage,
+  RoomChatMessage,
   ShareVideoMessage,
   SyncPingMessage,
   SyncRequestMessage,
@@ -28,6 +29,7 @@ import {
 const DISPLAY_NAME_MAX_LENGTH = 32;
 const TITLE_MAX_LENGTH = 128;
 const URL_MAX_LENGTH = 512;
+const CHAT_TEXT_MAX_LENGTH = 500;
 
 function isBoundedString(value: unknown, maxLength: number): value is string {
   return isString(value) && value.length <= maxLength;
@@ -98,7 +100,7 @@ function isJoinRoomPayload(
   return (
     isRecord(value) &&
     isRoomCode(value.roomCode) &&
-    isToken(value.joinToken) &&
+    (value.joinToken === undefined || isToken(value.joinToken)) &&
     (value.memberToken === undefined || isToken(value.memberToken)) &&
     isOptionalBoundedString(value.displayName, DISPLAY_NAME_MAX_LENGTH) &&
     isOptionalNonNegativeInteger(value.protocolVersion)
@@ -215,6 +217,24 @@ function isSyncPingMessage(value: unknown): value is SyncPingMessage {
   );
 }
 
+function isRoomChatPayload(
+  value: unknown,
+): value is RoomChatMessage["payload"] {
+  return (
+    isRecord(value) &&
+    isToken(value.memberToken) &&
+    isBoundedString(value.text, CHAT_TEXT_MAX_LENGTH)
+  );
+}
+
+function isRoomChatMessage(value: unknown): value is RoomChatMessage {
+  return (
+    isRecord(value) &&
+    value.type === "room:chat" &&
+    isRoomChatPayload(value.payload)
+  );
+}
+
 export function isClientMessage(value: unknown): value is ClientMessage {
   if (!isRecord(value) || !isString(value.type)) {
     return false;
@@ -237,6 +257,8 @@ export function isClientMessage(value: unknown): value is ClientMessage {
       return isSyncRequestMessage(value);
     case "sync:ping":
       return isSyncPingMessage(value);
+    case "room:chat":
+      return isRoomChatMessage(value);
     default:
       return false;
   }

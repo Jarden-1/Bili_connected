@@ -53,7 +53,7 @@ export function createMessageController(args: {
   };
   roomSessionController: {
     requestCreateRoom(): Promise<void>;
-    requestJoinRoom(roomCode: string, joinToken: string): Promise<void>;
+    requestJoinRoom(roomCode: string, joinToken: string | null): Promise<void>;
     waitForJoinAttemptResult(timeoutMs?: number): Promise<unknown>;
     requestLeaveRoom(): Promise<void>;
   };
@@ -129,7 +129,7 @@ export function createMessageController(args: {
     sendResponse: (response?: unknown) => void,
   ): Promise<void> {
     switch (message.type) {
-      case "popup:create-room":
+      case "popup:create-room": {
         await args.roomSessionController.requestCreateRoom();
         // Wait for the asynchronous room:created response to populate
         // roomSessionState.joinToken (up to 5s) so the popup gets the fresh
@@ -143,6 +143,7 @@ export function createMessageController(args: {
         }
         sendResponse(args.popupStateController.popupState());
         return;
+      }
       case "popup:join-room":
         await args.roomSessionController.requestJoinRoom(
           message.roomCode,
@@ -218,13 +219,46 @@ export function createMessageController(args: {
         await updatePageShareButtonEnabled(message.enabled);
         sendResponse(args.popupStateController.popupState());
         return;
+      case "popup:set-display-name": {
+        const trimmedName = message.displayName.trim();
+        if (!trimmedName) {
+          sendResponse(args.popupStateController.popupState());
+          return;
+        }
+        args.roomSessionState.displayName = trimmedName;
+        await args.persistProfileState();
+        if (
+          args.connectionState.connected &&
+          args.roomSessionState.roomCode &&
+          args.roomSessionState.memberToken
+        ) {
+          args.sendToServer({
+            type: "profile:update",
+            payload: {
+              memberToken: args.roomSessionState.memberToken,
+              displayName: args.roomSessionState.displayName,
+            },
+          });
+        }
+        args.notifyAll();
+        sendResponse(args.popupStateController.popupState());
+        return;
+      }
       case "content:get-share-context": {
         const sharedVideo =
           args.roomSessionState.roomState?.sharedVideo ?? null;
+        const roomState = args.roomSessionState.roomState;
         sendResponse({
           ok: true,
           roomCode: args.roomSessionState.roomCode,
-          memberCount: args.roomSessionState.roomState?.members.length ?? null,
+          joinToken: args.roomSessionState.joinToken ?? null,
+          memberCount: roomState?.members.length ?? null,
+          displayName: args.roomSessionState.displayName,
+          members:
+            roomState?.members.map((member) => ({
+              id: member.id,
+              name: member.name,
+            })) ?? [],
           sharedVideo: sharedVideo
             ? {
                 videoId: sharedVideo.videoId,

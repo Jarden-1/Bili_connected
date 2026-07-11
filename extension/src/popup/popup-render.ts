@@ -1,6 +1,7 @@
 import type { RoomMember } from "@bili-syncplay/protocol";
 import type { BackgroundPopupState } from "../shared/messages";
 import { getUiLanguage, t } from "../shared/i18n";
+import { formatInviteDraft } from "./helpers";
 import {
   getRenderedServerUrlValue,
   type ServerUrlDraftState,
@@ -11,13 +12,6 @@ let lastPendingRenderLogKey: string | null = null;
 
 export function resetPopupRenderDebugStateForTests(): void {
   lastPendingRenderLogKey = null;
-}
-
-export function formatInviteDraft(
-  roomCode: string | null,
-  _joinToken: string | null,
-): string {
-  return roomCode ?? "";
 }
 
 export function applyRoomActionControlState(args: {
@@ -52,10 +46,13 @@ export function renderPopup(args: {
   lastKnownRoomCode: string | null;
   copyRoomSuccess: boolean;
   copyLogsSuccess: boolean;
+  nicknameEditing: boolean;
+  nicknameInputFocused: boolean;
   sendPopupLog: (message: string) => Promise<void>;
 }): void {
   const roomCodeFocused = document.activeElement === args.refs.roomCodeInput;
   const serverUrlFocused = document.activeElement === args.refs.serverUrlInput;
+  const nicknameFocused = document.activeElement === args.refs.nicknameInput;
 
   args.refs.serverStatus.textContent = args.state.connected
     ? t("statusConnected")
@@ -92,10 +89,10 @@ export function renderPopup(args: {
 
   if (!roomCodeFocused) {
     if (args.state.roomCode) {
-      const nextRoomCodeDraft = formatInviteDraft(
-        args.state.roomCode,
-        args.state.joinToken,
-      );
+      const nextRoomCodeDraft = formatInviteDraft({
+        roomCode: args.state.roomCode,
+        joinToken: args.state.joinToken,
+      });
       args.setRoomCodeDraft(nextRoomCodeDraft);
       args.refs.roomCodeInput.value = nextRoomCodeDraft;
     } else {
@@ -126,6 +123,22 @@ export function renderPopup(args: {
     lastKnownPendingJoinRoomCode: args.lastKnownPendingJoinRoomCode,
     lastKnownRoomCode: args.lastKnownRoomCode,
   });
+
+  const displayName = args.state.displayName?.trim() ?? "";
+  args.refs.nicknameValue.textContent = displayName || "-";
+  args.refs.nicknameValue.title = displayName;
+  args.refs.nicknameValue.hidden = args.nicknameEditing;
+  args.refs.nicknameInput.hidden = !args.nicknameEditing;
+  args.refs.nicknameEditButton.textContent = args.nicknameEditing
+    ? t("pageShareNicknameCancel")
+    : t("pageShareNicknameEdit");
+  if (
+    args.nicknameEditing &&
+    !nicknameFocused &&
+    args.refs.nicknameInput.value === ""
+  ) {
+    args.refs.nicknameInput.value = displayName;
+  }
 
   args.refs.sharedVideoTitle.textContent =
     args.state.roomState?.sharedVideo?.title ?? t("stateNoSharedVideo");

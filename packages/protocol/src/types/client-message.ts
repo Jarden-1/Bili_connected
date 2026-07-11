@@ -15,7 +15,11 @@ export interface JoinRoomMessage {
   type: "room:join";
   payload: {
     roomCode: RoomCode;
-    joinToken: string;
+    /**
+     * Optional invite token. 4-digit public rooms accept joins without a
+     * token; private rooms must still echo the token returned by `room:created`.
+     */
+    joinToken?: string;
     memberToken?: string;
     displayName?: string;
     protocolVersion?: number;

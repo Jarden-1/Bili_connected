@@ -25,7 +25,6 @@ export interface DanmakuChatController {
   destroy(): void;
 }
 
-const BILI_BLUE = "#00A1D6";
 const BILI_PINK = "#FB7299";
 const MOUNT_CHECK_MS = 600;
 const DANMAKU_SPEED_PX_PER_SEC = 120;
@@ -236,20 +235,28 @@ export function createDanmakuChatController(args: {
     roomButton.type = "button";
     roomButton.textContent = "发送到房间";
     roomButton.title = "把当前输入框的内容发送给同房间的人";
-    // Match the Bilibili send button's height so they sit flush on the
-    // same baseline. Use a smaller font + snug padding so the label
-    // doesn't blow the button out, and no left margin so the two
-    // buttons stay glued together.
+    // Sit flush against the Bilibili send button so the pair reads as a
+    // single connected control. The send button keeps its 4px right-side
+    // rounding, but we tuck our button underneath that corner with a small
+    // negative left margin and a squared left edge in the same pink as our
+    // own background: the rounded corner is "hidden" by our button and the
+    // two surfaces touch without a visible seam. position: relative +
+    // zIndex keeps us on top of the send button's corner when it carries
+    // any decoration (e.g. B 站's mode-switch arrow). A wider right padding
+    // makes the "to room" label clearly longer than "send" without
+    // inflating the height.
     Object.assign(roomButton.style, {
       background: BILI_PINK,
       color: "#fff",
       border: "none",
-      borderRadius: "4px",
-      padding: sendBtn ? getSendButtonPadding(sendBtn) : "0 8px",
+      borderRadius: "0 4px 4px 0",
+      padding: sendBtn ? buildAdjacentButtonPadding(sendBtn) : "0 16px 0 12px",
       height: sendBtn ? getSendButtonHeight(sendBtn) : "auto",
       minWidth: "auto",
-      marginLeft: "0px",
-      fontSize: "12px",
+      marginLeft: "-4px",
+      position: "relative",
+      zIndex: "1",
+      fontSize: sendBtn ? getSendButtonFontSize(sendBtn) : "12px",
       fontWeight: "500",
       cursor: "pointer",
       whiteSpace: "nowrap",
@@ -292,9 +299,26 @@ export function createDanmakuChatController(args: {
     return cs.height !== "auto" ? cs.height : "auto";
   }
 
-  function getSendButtonPadding(sendBtn: HTMLElement): string {
+  // The "to room" label is longer than "send", so we mirror the send button's
+  // vertical padding to keep the baseline aligned while widening only the
+  // horizontal sides. The left side stays a touch narrower than the send
+  // button (so the squared left edge reads as glued to the send button's
+  // rounded right edge) and the right side grows to make the button visibly
+  // longer.
+  function buildAdjacentButtonPadding(sendBtn: HTMLElement): string {
     const cs = window.getComputedStyle(sendBtn);
-    return `${cs.paddingTop || "4px"} ${cs.paddingRight || "10px"} ${cs.paddingBottom || "4px"} ${cs.paddingLeft || "10px"}`;
+    const paddingTop = cs.paddingTop || "4px";
+    const paddingBottom = cs.paddingBottom || "4px";
+    const sendPaddingRight = parsePx(cs.paddingRight, 10);
+    const sendPaddingLeft = parsePx(cs.paddingLeft, 10);
+    const left = `${Math.max(6, Math.round(sendPaddingLeft - 2))}px`;
+    const right = `${Math.round(sendPaddingRight + 6)}px`;
+    return `${paddingTop} ${right} ${paddingBottom} ${left}`;
+  }
+
+  function parsePx(value: string, fallback: number): number {
+    const parsed = Number.parseFloat(value);
+    return Number.isFinite(parsed) ? parsed : fallback;
   }
 
   function getSendButtonFontSize(sendBtn: HTMLElement): string {
@@ -388,13 +412,16 @@ export function createDanmakuChatController(args: {
       old?.remove();
     }
 
-    window.setTimeout(() => {
-      const idx = danmakuItems.indexOf(item);
-      if (idx >= 0) {
-        danmakuItems.splice(idx, 1);
-      }
-      item.remove();
-    }, duration * 1000 + 200);
+    window.setTimeout(
+      () => {
+        const idx = danmakuItems.indexOf(item);
+        if (idx >= 0) {
+          danmakuItems.splice(idx, 1);
+        }
+        item.remove();
+      },
+      duration * 1000 + 200,
+    );
   }
 
   return {

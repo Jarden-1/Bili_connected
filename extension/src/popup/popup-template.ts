@@ -37,13 +37,21 @@ export function renderPopupTemplate(): string {
               <button class="secondary compact-button danger-button" id="leave-room" type="button">${escapeHtml(t("actionLeave"))}</button>
             </div>
           </div>
+          <div class="room-nickname-row" id="popup-nickname-row">
+            <span class="field-label">${escapeHtml(t("pageShareNickname"))}</span>
+            <span class="room-nickname-value" id="popup-nickname-value">-</span>
+            <input class="room-nickname-input" id="popup-nickname-input" type="text" maxlength="32" autocomplete="off" aria-label="${escapeHtml(t("pageShareNickname"))}" hidden>
+            <button class="secondary compact-button" id="popup-edit-nickname" type="button">${escapeHtml(t("pageShareNicknameEdit"))}</button>
+          </div>
         </div>
 
         <div class="room-panel room-panel-idle" id="room-panel-idle">
-          <div class="room-entry-row">
-            <button class="compact-button primary-button" id="create-room" type="button">${escapeHtml(t("actionCreate"))}</button>
-            <input id="room-code" placeholder="${escapeHtml(t("roomCodePlaceholder"))}">
-            <button class="secondary compact-button" id="join-room" type="button">${escapeHtml(t("actionJoin"))}</button>
+          <div class="room-entry">
+            <button class="compact-button primary-button full-width-button" id="create-room" type="button">${escapeHtml(t("actionCreate"))}</button>
+            <div class="room-entry-row">
+              <input id="room-code" placeholder="${escapeHtml(t("roomCodePlaceholder"))}">
+              <button class="secondary compact-button" id="join-room" type="button">${escapeHtml(t("actionJoin"))}</button>
+            </div>
           </div>
         </div>
 

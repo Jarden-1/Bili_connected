@@ -78,6 +78,9 @@ function createPopupRefs(): PopupRefs {
     roomPanelIdle: createElement() as unknown as HTMLElement,
     roomCodeInput: createElement() as unknown as HTMLInputElement,
     copyRoomButton: createElement() as unknown as HTMLButtonElement,
+    nicknameValue: createElement() as unknown as HTMLElement,
+    nicknameEditButton: createElement() as unknown as HTMLButtonElement,
+    nicknameInput: createElement() as unknown as HTMLInputElement,
     shareCurrentVideoButton: createElement() as unknown as HTMLButtonElement,
     sharedVideoCard: createElement() as unknown as HTMLButtonElement,
     sharedVideoTitle: createElement() as unknown as HTMLElement,
@@ -102,7 +105,7 @@ function createPopupRefs(): PopupRefs {
 test("applyRoomActionControlState disables room actions during room transitions", () => {
   resetPopupRenderDebugStateForTests();
   const refs = createPopupRefs();
-  refs.roomCodeInput.value = "ROOM01:token-1";
+  refs.roomCodeInput.value = "1234:token-1";
 
   applyRoomActionControlState({
     refs,
@@ -142,12 +145,12 @@ test("renderPopup updates popup metrics, owner hint, logs, and draft values", as
         connected: true,
         serverUrl: "ws://localhost:8787",
         error: null,
-        roomCode: "ROOM01",
+        roomCode: "1234",
         joinToken: "join-token-1",
         memberId: "member-1",
         displayName: "Alice",
         roomState: {
-          roomCode: "ROOM01",
+          roomCode: "1234",
           sharedVideo: {
             videoId: "BV1xx411c7mD",
             url: "https://www.bilibili.com/video/BV1xx411c7mD?p=2",
@@ -185,21 +188,23 @@ test("renderPopup updates popup metrics, owner hint, logs, and draft values", as
       roomActionPending: false,
       lastKnownPendingCreateRoom: false,
       lastKnownPendingJoinRoomCode: null,
-      lastKnownRoomCode: "ROOM01",
+      lastKnownRoomCode: "1234",
       copyRoomSuccess: true,
       copyLogsSuccess: true,
+      nicknameEditing: false,
+      nicknameInputFocused: false,
       sendPopupLog: async () => {},
     });
 
     assert.equal(refs.serverStatus.textContent, "Connected");
     assert.equal(refs.serverStatus.classList.contains("is-connected"), true);
-    assert.equal(refs.roomStatus.textContent, "ROOM01");
+    assert.equal(refs.roomStatus.textContent, "1234");
     assert.equal(refs.membersStatus.textContent, "2 members");
     assert.equal(refs.message.textContent, "Ready");
-    assert.equal(roomCodeInput.value, "ROOM01:join-token-1");
+    assert.equal(roomCodeInput.value, "1234");
     assert.equal(serverUrlInput.value, "ws://localhost:8787");
     assert.equal(refs.pageShareButtonEnabledInput.checked, false);
-    assert.deepEqual(draftValues, ["ROOM01:join-token-1"]);
+    assert.deepEqual(draftValues, ["1234"]);
     assert.equal(refs.copyRoomButton.disabled, false);
     assert.equal(
       refs.copyRoomButton.classList.contains("success-button"),
@@ -256,22 +261,24 @@ test("renderPopup debug log distinguishes background pending state from local UI
         logs: [],
       },
       serverUrlDraft: { value: "", dirty: false },
-      roomCodeDraft: "ROOM01:join-token-1",
+      roomCodeDraft: "1234",
       setRoomCodeDraft: () => {},
       localStatusMessage: null,
       roomActionPending: true,
       lastKnownPendingCreateRoom: false,
-      lastKnownPendingJoinRoomCode: "ROOM01",
+      lastKnownPendingJoinRoomCode: "1234",
       lastKnownRoomCode: null,
       copyRoomSuccess: false,
       copyLogsSuccess: false,
+      nicknameEditing: false,
+      nicknameInputFocused: false,
       sendPopupLog: async (message) => {
         popupLogs.push(message);
       },
     });
 
     assert.deepEqual(popupLogs, [
-      "Render room=none connected=false backgroundPendingJoin=none uiPendingAction=true lastKnownPendingJoin=ROOM01 lastKnownRoom=none",
+      "Render room=none connected=false backgroundPendingJoin=none uiPendingAction=true lastKnownPendingJoin=1234 lastKnownRoom=none",
     ]);
   } finally {
     setLocaleForTests(null);
@@ -321,6 +328,8 @@ test("renderPopup only logs once for repeated identical pending renders", async 
     lastKnownRoomCode: null,
     copyRoomSuccess: false,
     copyLogsSuccess: false,
+    nicknameEditing: false,
+    nicknameInputFocused: false,
     sendPopupLog: async (message: string) => {
       popupLogs.push(message);
     },
@@ -356,12 +365,12 @@ test("renderPopup falls back to sharedByDisplayName when the sharer is no longer
         connected: true,
         serverUrl: "ws://localhost:8787",
         error: null,
-        roomCode: "ROOM01",
+        roomCode: "1234",
         joinToken: "join-token-1",
         memberId: "member-1",
         displayName: "Alice",
         roomState: {
-          roomCode: "ROOM01",
+          roomCode: "1234",
           sharedVideo: {
             videoId: "BV1xx411c7mD",
             url: "https://www.bilibili.com/video/BV1xx411c7mD?p=2",
@@ -389,9 +398,11 @@ test("renderPopup falls back to sharedByDisplayName when the sharer is no longer
       roomActionPending: false,
       lastKnownPendingCreateRoom: false,
       lastKnownPendingJoinRoomCode: null,
-      lastKnownRoomCode: "ROOM01",
+      lastKnownRoomCode: "1234",
       copyRoomSuccess: false,
       copyLogsSuccess: false,
+      nicknameEditing: false,
+      nicknameInputFocused: false,
       sendPopupLog: async () => {},
     });
 

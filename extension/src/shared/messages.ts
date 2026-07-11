@@ -15,7 +15,11 @@ export interface SharedVideoToastPayload {
 
 export type PopupToBackgroundMessage =
   | { type: "popup:create-room" }
-  | { type: "popup:join-room"; roomCode: string; joinToken: string }
+  | {
+      type: "popup:join-room";
+      roomCode: string;
+      joinToken: string | null;
+    }
   | { type: "popup:leave-room" }
   | { type: "popup:debug-log"; message: string }
   | { type: "popup:get-state" }
@@ -23,6 +27,7 @@ export type PopupToBackgroundMessage =
   | { type: "popup:share-current-video" }
   | { type: "popup:set-server-url"; serverUrl: string }
   | { type: "popup:set-page-share-button-enabled"; enabled: boolean }
+  | { type: "popup:set-display-name"; displayName: string }
   | { type: "popup:open-shared-video" };
 
 export interface ActiveVideoResponsePayload {
@@ -44,7 +49,11 @@ export type ContentToBackgroundMessage =
   | { type: "content:set-page-share-button-enabled"; enabled: boolean }
   | { type: "content:debug-log"; payload: { message: string } }
   | { type: "content:create-room" }
-  | { type: "content:join-room"; roomCode: string; joinToken: string }
+  | {
+      type: "content:join-room";
+      roomCode: string;
+      joinToken: string | null;
+    }
   | { type: "content:leave-room" }
   | { type: "content:set-display-name"; displayName: string }
   | { type: "content:room-chat"; text: string };
@@ -131,7 +140,10 @@ export interface ActiveVideoResponse {
 export interface ShareContextResponse {
   ok: boolean;
   roomCode: string | null;
+  joinToken: string | null;
   memberCount: number | null;
+  displayName: string | null;
+  members: Array<{ id: string; name: string }>;
   sharedVideo: SharedVideo | null;
   error?: string;
 }

@@ -28,6 +28,8 @@
   --danger-bg: #fff2f6;
   --danger-border: #f2b7c7;
   --danger-text: #c0344e;
+  --danger-hover-bg: #fbdde6;
+  --danger-hover-border: #c0344e;
   --success: #22c55e;
   --status-offline: #aaaaaa;
   --status-offline-text: #9aa0b0;
@@ -38,6 +40,7 @@
   --chip-active-bg: #fff2f6;
   --chip-active-border: #f2b7c7;
   --chip-active-text: #ff5a8a;
+  --toggle-track-bg: #d8dde6;
   --focus-ring: rgba(255, 90, 138, 0.18);
 }
 
@@ -68,6 +71,8 @@
     --danger-bg: #4a2331;
     --danger-border: #a34c68;
     --danger-text: #ff8cab;
+    --danger-hover-bg: #623346;
+    --danger-hover-border: #ff8cab;
     --success: #4ade80;
     --status-offline: #6e7688;
     --status-offline-text: #8b93a7;
@@ -78,6 +83,7 @@
     --chip-active-bg: #4a2331;
     --chip-active-border: #a34c68;
     --chip-active-text: #ff8cab;
+    --toggle-track-bg: #383d4a;
     --focus-ring: rgba(255, 107, 150, 0.2);
   }
 }
@@ -90,7 +96,9 @@ body {
   max-width: 390px;
   background: var(--page-bg);
   color: var(--text-primary);
-  font-family: "Microsoft YaHei UI", "PingFang SC", "Noto Sans SC", sans-serif;
+  font-family:
+    -apple-system, BlinkMacSystemFont, "Microsoft YaHei UI", "PingFang SC",
+    "Noto Sans SC", "Segoe UI", sans-serif;
   box-sizing: border-box;
   overflow-x: hidden;
 }
@@ -249,6 +257,36 @@ body {
   flex: none;
 }
 
+.room-nickname-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--panel-border);
+  min-height: 28px;
+  flex-wrap: wrap;
+}
+
+.room-nickname-row .field-label {
+  flex: none;
+}
+
+.room-nickname-value {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.room-nickname-input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
 input,
 button {
   min-height: 34px;
@@ -315,6 +353,11 @@ button:disabled {
   opacity: 0.6;
 }
 
+button:focus-visible {
+  outline: 2px solid var(--primary-bg);
+  outline-offset: 2px;
+}
+
 .primary-button {
   background: var(--primary-bg);
   color: var(--primary-text);
@@ -333,10 +376,20 @@ button.secondary {
   border-color: var(--panel-border-strong);
 }
 
+button.secondary:hover:not(:disabled) {
+  background: var(--panel-bg);
+  border-color: var(--text-subtle);
+}
+
 .danger-button {
   background: var(--danger-bg);
   border-color: var(--danger-border);
-  color: color-mix(in srgb, var(--danger-text) 82%, white);
+  color: var(--danger-text);
+}
+
+.danger-button:hover:not(:disabled) {
+  background: var(--danger-hover-bg);
+  border-color: var(--danger-hover-border);
 }
 
 button.secondary:hover,
@@ -352,6 +405,17 @@ button.secondary:hover,
 
 .copy-button {
   min-width: 52px;
+}
+
+.room-entry {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.room-entry > .primary-button {
+  min-height: 36px;
+  font-size: 12px;
 }
 
 .room-entry-row > input,
@@ -505,7 +569,7 @@ button.secondary.success-button .button-icon-check {
   padding: 6px 12px;
   background: var(--primary-bg);
   border-color: var(--primary-bg);
-  color: color-mix(in srgb, var(--primary-text) 90%, rgba(255, 255, 255, 0.2));
+  color: var(--primary-text);
   border-radius: 999px;
   font-size: 12px;
   line-height: 1.2;
@@ -646,7 +710,7 @@ button.secondary.success-button .button-icon-check {
   height: 100%;
   border-radius: 999px;
   border: 1px solid var(--panel-border-strong);
-  background: color-mix(in srgb, var(--panel-bg) 72%, var(--text-subtle));
+  background: var(--toggle-track-bg);
   box-sizing: border-box;
   transition:
     background-color 120ms ease,

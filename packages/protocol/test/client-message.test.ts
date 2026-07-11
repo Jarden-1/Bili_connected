@@ -76,16 +76,16 @@ test("rejects room:join without payload", () => {
   );
 });
 
-test("rejects room:join without joinToken", () => {
+test("accepts room:join without joinToken for public rooms", () => {
   assert.equal(
     isClientMessage({
       type: "room:join",
       payload: {
-        roomCode: "ABC123",
+        roomCode: "1234",
         displayName: "Alice",
       },
     }),
-    false,
+    true,
   );
 });
 
@@ -108,7 +108,7 @@ test("rejects room:join when joinToken is too short", () => {
     isClientMessage({
       type: "room:join",
       payload: {
-        roomCode: "ABC123",
+        roomCode: "1234",
         joinToken: "short-token",
         displayName: "Alice",
       },
@@ -122,7 +122,7 @@ test("accepts room:join with an optional memberToken for reconnect", () => {
     isClientMessage({
       type: "room:join",
       payload: {
-        roomCode: "ABC123",
+        roomCode: "1234",
         joinToken: VALID_TOKEN,
         memberToken: VALID_TOKEN,
         displayName: "Alice",
@@ -137,7 +137,7 @@ test("accepts room:join when displayName is exactly 32 characters", () => {
     isClientMessage({
       type: "room:join",
       payload: {
-        roomCode: "ABC123",
+        roomCode: "1234",
         joinToken: VALID_TOKEN,
         displayName: "a".repeat(DISPLAY_NAME_MAX_LENGTH),
       },
@@ -673,7 +673,7 @@ test("accepts a valid room:join message", () => {
     isClientMessage({
       type: "room:join",
       payload: {
-        roomCode: "ABC123",
+        roomCode: "1234",
         joinToken: VALID_TOKEN,
         displayName: "Alice",
       },
@@ -700,7 +700,7 @@ test("accepts room:join with protocolVersion", () => {
     isClientMessage({
       type: "room:join",
       payload: {
-        roomCode: "ABC123",
+        roomCode: "1234",
         joinToken: VALID_TOKEN,
         displayName: "Alice",
         protocolVersion: 1,
@@ -728,7 +728,7 @@ test("rejects room:join when protocolVersion is negative", () => {
     isClientMessage({
       type: "room:join",
       payload: {
-        roomCode: "ABC123",
+        roomCode: "1234",
         joinToken: VALID_TOKEN,
         protocolVersion: -1,
       },
@@ -742,9 +742,60 @@ test("rejects room:join when protocolVersion is a float", () => {
     isClientMessage({
       type: "room:join",
       payload: {
-        roomCode: "ABC123",
+        roomCode: "1234",
         joinToken: VALID_TOKEN,
         protocolVersion: 1.5,
+      },
+    }),
+    false,
+  );
+});
+
+test("accepts a valid room:chat message", () => {
+  assert.equal(
+    isClientMessage({
+      type: "room:chat",
+      payload: {
+        memberToken: VALID_TOKEN,
+        text: "hello room",
+      },
+    }),
+    true,
+  );
+});
+
+test("rejects room:chat without a memberToken", () => {
+  assert.equal(
+    isClientMessage({
+      type: "room:chat",
+      payload: {
+        text: "hello room",
+      },
+    }),
+    false,
+  );
+});
+
+test("rejects room:chat when text is not a string", () => {
+  assert.equal(
+    isClientMessage({
+      type: "room:chat",
+      payload: {
+        memberToken: VALID_TOKEN,
+        text: 123,
+      },
+    }),
+    false,
+  );
+});
+
+test("rejects room:chat when text exceeds 500 characters", () => {
+  assert.equal(
+    isClientMessage({
+      type: "room:chat",
+      payload: {
+        memberToken: VALID_TOKEN,
+        text: "a".repeat(501),
       },
     }),
     false,

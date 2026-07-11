@@ -52,7 +52,7 @@ export function createMessageHandler(options: {
     joinRoomForSession: (
       session: Session,
       roomCode: string,
-      joinToken: string,
+      joinToken: string | null,
       displayName?: string,
       previousMemberToken?: string,
     ) => Promise<{ room: { code: string }; memberToken: string }>;
@@ -562,7 +562,7 @@ export function createMessageHandler(options: {
             const { room, memberToken } = await roomService.joinRoomForSession(
               session,
               message.payload.roomCode,
-              message.payload.joinToken,
+              message.payload.joinToken ?? null,
               message.payload.displayName,
               message.payload.memberToken,
             );

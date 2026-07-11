@@ -26,7 +26,12 @@ export type PageShareActionResult =
 
 export interface PageSharePopoverViewModel {
   status: string | null;
-  rows: Array<{ label: string; value: string }>;
+  joined: boolean;
+  roomCode: string | null;
+  joinToken: string | null;
+  members: Array<{ id: string; name: string }>;
+  displayName: string | null;
+  sharedVideoTitle: string | null;
 }
 
 export function createPageSharePopoverViewModel(args: {
@@ -37,41 +42,45 @@ export function createPageSharePopoverViewModel(args: {
   if (args.loading) {
     return {
       status: t("pageSharePopoverLoading"),
-      rows: [],
+      joined: false,
+      roomCode: null,
+      joinToken: null,
+      members: [],
+      displayName: null,
+      sharedVideoTitle: null,
     };
   }
   if (args.error) {
     return {
       status: args.error,
-      rows: [],
+      joined: false,
+      roomCode: null,
+      joinToken: null,
+      members: [],
+      displayName: null,
+      sharedVideoTitle: null,
     };
   }
   if (!args.context?.roomCode) {
     return {
       status: t("pageShareRoomNotJoined"),
-      rows: [],
+      joined: false,
+      roomCode: null,
+      joinToken: null,
+      members: [],
+      displayName: null,
+      sharedVideoTitle: null,
     };
   }
-
-  const rows = [
-    {
-      label: t("pageShareRoomCode"),
-      value: args.context.roomCode,
-    },
-  ];
-  if (args.context.memberCount !== null) {
-    rows.push({
-      label: t("pageShareMemberCount"),
-      value: t("membersCount", { count: args.context.memberCount }),
-    });
-  }
-  rows.push({
-    label: t("pageShareSharedVideo"),
-    value: args.context.sharedVideo?.title ?? t("pageShareNoSharedVideo"),
-  });
   return {
     status: null,
-    rows,
+    joined: true,
+    roomCode: args.context.roomCode,
+    joinToken: args.context.joinToken ?? null,
+    members: args.context.members,
+    displayName: args.context.displayName,
+    sharedVideoTitle:
+      args.context.sharedVideo?.title ?? t("pageShareNoSharedVideo"),
   };
 }
 
@@ -169,6 +178,7 @@ const POPOVER_WIDTH = 228;
 const POPOVER_ESTIMATED_HEIGHT = 146;
 const POPOVER_GAP = 10;
 const POPOVER_HIDE_DELAY_MS = 140;
+const QUICK_CREATE_SETTLE_DELAY_MS = 800;
 const WEB_FULLSCREEN_SELECTORS = [
   ".bilibili-player.mode-fullscreen",
   ".bilibili-player.mode-webfullscreen",
@@ -287,11 +297,36 @@ export function createPageShareButtonController(args: {
   let button: HTMLButtonElement | null = null;
   let popover: HTMLDivElement | null = null;
   let popoverStatus: HTMLParagraphElement | null = null;
-  let popoverRows: HTMLDListElement | null = null;
   let popoverToggle: HTMLInputElement | null = null;
+  let joinSection: HTMLDivElement | null = null;
+  let joinForm: HTMLFormElement | null = null;
+  let joinInput: HTMLInputElement | null = null;
+  let _joinButton: HTMLButtonElement | null = null;
+  let joinError: HTMLParagraphElement | null = null;
+  let quickCreateButton: HTMLButtonElement | null = null;
+  let joinedSection: HTMLDivElement | null = null;
+  let roomCodeValueEl: HTMLSpanElement | null = null;
+  let copyButton: HTMLButtonElement | null = null;
+  let sharedVideoValueEl: HTMLSpanElement | null = null;
+  let nicknameValueEl: HTMLSpanElement | null = null;
+  let editNicknameButton: HTMLButtonElement | null = null;
+  let nicknameInput: HTMLInputElement | null = null;
+  let nicknameError: HTMLParagraphElement | null = null;
+  let membersHeadingEl: HTMLSpanElement | null = null;
+  let membersList: HTMLUListElement | null = null;
+  let leaveButton: HTMLButtonElement | null = null;
   let enabled = false;
   let pending = false;
   let settingsPending = false;
+  let joinPending = false;
+  let leavePending = false;
+  let quickCreatePending = false;
+  let nicknameEditing = false;
+  let nicknameInputFocused = false;
+  let copyButtonState: "idle" | "copied" = "idle";
+  let copyButtonResetTimer = 0;
+  let joinErrorMessage: string | null = null;
+  let nicknameErrorMessage: string | null = null;
   let started = false;
   let position: PageShareButtonPosition | null = null;
   let animationFrame = 0;
@@ -335,7 +370,7 @@ export function createPageShareButtonController(args: {
   }
 
   function renderPopover(buttonPosition: PageShareButtonPosition): void {
-    if (!popover || !popoverStatus || !popoverRows || !popoverToggle) {
+    if (!popover || !popoverStatus || !popoverToggle) {
       return;
     }
 
@@ -355,18 +390,111 @@ export function createPageShareButtonController(args: {
       error: popoverError,
       context: popoverContext,
     });
+
     popoverStatus.hidden = !viewModel.status;
     popoverStatus.textContent = viewModel.status ?? "";
-    popoverRows.replaceChildren(
-      ...viewModel.rows.flatMap((row) => {
-        const label = document.createElement("dt");
-        label.textContent = row.label;
-        const value = document.createElement("dd");
-        value.textContent = row.value;
-        value.title = row.value;
-        return [label, value];
-      }),
-    );
+
+    renderJoinSection(viewModel);
+    renderJoinedSection(viewModel);
+  }
+
+  function renderJoinSection(viewModel: PageSharePopoverViewModel): void {
+    if (!joinSection) {
+      return;
+    }
+    const showJoin = !popoverLoading && !viewModel.joined;
+    joinSection.hidden = !showJoin;
+    if (showJoin && joinInput && !joinPending) {
+      // Don't steal focus on every render — only when the popover first
+      // transitions to the join form, so the user can keep using the page.
+    }
+    if (joinError) {
+      joinError.hidden = !joinErrorMessage;
+      joinError.textContent = joinErrorMessage ?? "";
+    }
+    if (quickCreateButton) {
+      quickCreateButton.disabled = quickCreatePending || joinPending;
+      quickCreateButton.textContent = quickCreatePending
+        ? t("pageShareQuickCreatePending")
+        : t("pageShareQuickCreate");
+    }
+  }
+
+  function renderJoinedSection(viewModel: PageSharePopoverViewModel): void {
+    if (!joinedSection) {
+      return;
+    }
+    const showJoined = !popoverLoading && viewModel.joined;
+    joinedSection.hidden = !showJoined;
+    if (!showJoined) {
+      return;
+    }
+    if (roomCodeValueEl) {
+      roomCodeValueEl.textContent = viewModel.roomCode ?? "";
+      roomCodeValueEl.title = viewModel.roomCode ?? "";
+    }
+    if (copyButton) {
+      copyButton.disabled = copyButtonState !== "idle";
+      copyButton.classList.toggle("is-copied", copyButtonState === "copied");
+      copyButton.textContent =
+        copyButtonState === "copied"
+          ? t("pageShareRoomCodeCopied")
+          : t("pageShareRoomCodeCopy");
+    }
+    if (sharedVideoValueEl) {
+      const title = viewModel.sharedVideoTitle?.trim() || "";
+      sharedVideoValueEl.textContent = title || t("pageShareNoSharedVideo");
+      sharedVideoValueEl.title = title;
+      sharedVideoValueEl.classList.toggle("is-empty", !title);
+    }
+    if (nicknameValueEl) {
+      const nick = viewModel.displayName?.trim() || "";
+      nicknameValueEl.textContent = nick;
+      nicknameValueEl.title = nick;
+    }
+    if (nicknameValueEl) {
+      nicknameValueEl.hidden = nicknameEditing;
+    }
+    if (editNicknameButton) {
+      editNicknameButton.textContent = nicknameEditing
+        ? t("pageShareNicknameCancel")
+        : t("pageShareNicknameEdit");
+    }
+    if (nicknameInput) {
+      nicknameInput.hidden = !nicknameEditing;
+    }
+    if (nicknameInput && nicknameEditing && !nicknameInputFocused) {
+      nicknameInput.value = viewModel.displayName ?? "";
+    }
+    if (membersHeadingEl) {
+      const otherCount = viewModel.members.length;
+      membersHeadingEl.textContent = t("pageShareMembersHeading", {
+        count: otherCount,
+      });
+    }
+    if (membersList) {
+      membersList.replaceChildren();
+      if (viewModel.members.length === 0) {
+        const empty = document.createElement("li");
+        empty.className = "popover-member-chip";
+        empty.textContent = t("pageShareNoMembers");
+        membersList.appendChild(empty);
+      } else {
+        for (const member of viewModel.members) {
+          const chip = document.createElement("li");
+          chip.className = "popover-member-chip";
+          chip.textContent = member.name;
+          membersList.appendChild(chip);
+        }
+      }
+    }
+    if (leaveButton) {
+      leaveButton.disabled = leavePending;
+    }
+    if (nicknameError) {
+      nicknameError.hidden = !nicknameErrorMessage;
+      nicknameError.textContent = nicknameErrorMessage ?? "";
+    }
   }
 
   function render(): void {
@@ -385,17 +513,44 @@ export function createPageShareButtonController(args: {
 
   function removeHost(): void {
     clearPopoverHideTimer();
+    if (copyButtonResetTimer) {
+      window.clearTimeout(copyButtonResetTimer);
+      copyButtonResetTimer = 0;
+    }
     popoverRequestSeq += 1;
     popoverVisible = false;
     popoverLoading = false;
     settingsPending = false;
+    joinPending = false;
+    leavePending = false;
+    nicknameEditing = false;
+    nicknameInputFocused = false;
+    copyButtonState = "idle";
+    joinErrorMessage = null;
+    nicknameErrorMessage = null;
     host?.remove();
     host = null;
     button = null;
     popover = null;
     popoverStatus = null;
-    popoverRows = null;
     popoverToggle = null;
+    joinSection = null;
+    joinForm = null;
+    joinInput = null;
+    _joinButton = null;
+    joinError = null;
+    quickCreateButton = null;
+    joinedSection = null;
+    roomCodeValueEl = null;
+    copyButton = null;
+    sharedVideoValueEl = null;
+    nicknameValueEl = null;
+    editNicknameButton = null;
+    nicknameInput = null;
+    nicknameError = null;
+    membersHeadingEl = null;
+    membersList = null;
+    leaveButton = null;
     dragState = null;
   }
 
@@ -628,7 +783,7 @@ export function createPageShareButtonController(args: {
           color: #242631;
           box-shadow: 0 10px 24px rgba(27, 31, 45, 0.14), 0 2px 8px rgba(27, 31, 45, 0.08);
           box-sizing: border-box;
-          font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+          font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei UI", "PingFang SC", sans-serif;
           pointer-events: auto;
           opacity: 0;
           transform: translateY(2px);
@@ -653,29 +808,207 @@ export function createPageShareButtonController(args: {
           font-size: 12px;
           line-height: 18px;
         }
-        .popover-rows {
-          display: grid;
-          grid-template-columns: 58px minmax(0, 1fr);
-          gap: 6px 8px;
-          margin: 0;
+        .popover-section {
+          display: flex;
+          flex-direction: column;
+          gap: 6px;
+        }
+        .popover-section[hidden] {
+          display: none;
+        }
+        .popover-section + .popover-section {
+          margin-top: 8px;
+          padding-top: 8px;
+          border-top: 1px solid rgba(27, 31, 45, 0.08);
+        }
+        .popover-row {
+          display: flex;
+          align-items: center;
+          gap: 8px;
           font-size: 12px;
           line-height: 17px;
         }
-        .popover-rows:empty {
-          display: none;
-        }
-        .popover-rows dt {
-          margin: 0;
+        .popover-row-label {
+          flex: 0 0 auto;
           color: #767b8c;
           font-weight: 500;
         }
-        .popover-rows dd {
+        .popover-row-value {
+          flex: 1 1 auto;
           min-width: 0;
-          margin: 0;
           overflow: hidden;
-          color: #242631;
           text-overflow: ellipsis;
           white-space: nowrap;
+          color: #242631;
+        }
+        .popover-room-code-row {
+          justify-content: space-between;
+        }
+        .popover-room-code-value {
+          font-family: ui-monospace, "SFMono-Regular", "Menlo", monospace;
+          font-weight: 600;
+        }
+        .popover-link-button {
+          flex: 0 0 auto;
+          background: none;
+          border: 1px solid rgba(27, 31, 45, 0.12);
+          border-radius: 4px;
+          padding: 3px 8px;
+          font: 500 12px/1.2 inherit;
+          color: #ff5a8a;
+          cursor: pointer;
+          transition: background 0.15s, border-color 0.15s, color 0.15s;
+        }
+        .popover-link-button:hover:not(:disabled) {
+          background: rgba(255, 90, 138, 0.08);
+          border-color: rgba(255, 90, 138, 0.3);
+        }
+        .popover-link-button:focus-visible {
+          outline: 2px solid rgba(255, 90, 138, 0.5);
+          outline-offset: 1px;
+        }
+        .popover-link-button:disabled {
+          opacity: 0.6;
+          cursor: default;
+        }
+        .popover-link-button.is-copied {
+          background: rgba(0, 161, 102, 0.1);
+          border-color: rgba(0, 161, 102, 0.3);
+          color: #00a166;
+        }
+        .popover-form {
+          display: flex;
+          flex-direction: column;
+          gap: 6px;
+        }
+        .popover-input-row {
+          display: flex;
+          gap: 6px;
+        }
+        .popover-input {
+          flex: 1 1 auto;
+          min-width: 0;
+          padding: 6px 8px;
+          border: 1px solid rgba(27, 31, 45, 0.16);
+          border-radius: 4px;
+          font: 500 12px/1.2 inherit;
+          color: #242631;
+          background: #ffffff;
+          outline: none;
+          transition: border-color 0.15s, box-shadow 0.15s;
+        }
+        .popover-input:focus {
+          border-color: #ff5a8a;
+          box-shadow: 0 0 0 2px rgba(255, 90, 138, 0.18);
+        }
+        .popover-input:disabled {
+          background: #f4f5f8;
+          color: #999;
+        }
+        .popover-button {
+          flex: 0 0 auto;
+          background: #ff5a8a;
+          color: #ffffff;
+          border: 1px solid transparent;
+          border-radius: 4px;
+          padding: 6px 12px;
+          font: 600 12px/1.2 inherit;
+          cursor: pointer;
+          transition: background 0.15s, opacity 0.15s;
+        }
+        .popover-button:hover:not(:disabled) {
+          background: #ff4b81;
+        }
+        .popover-button:focus-visible {
+          outline: 2px solid rgba(255, 90, 138, 0.5);
+          outline-offset: 1px;
+        }
+        .popover-button:disabled {
+          opacity: 0.6;
+          cursor: default;
+        }
+        .popover-quick-create-button {
+          width: 100%;
+          padding: 7px 12px;
+          margin-bottom: 2px;
+        }
+        .popover-shared-video-row {
+          flex-direction: column;
+          align-items: stretch;
+          gap: 3px;
+        }
+        .popover-shared-video-value {
+          flex: none;
+          white-space: normal;
+          word-break: break-word;
+          overflow: visible;
+          text-overflow: clip;
+          line-height: 1.4;
+          font-weight: 500;
+        }
+        .popover-shared-video-value.is-empty {
+          color: #999;
+          font-style: italic;
+          font-weight: 400;
+        }
+        .popover-nickname-row {
+          flex-wrap: wrap;
+        }
+        .popover-nickname-input {
+          flex: 1 1 100px;
+          min-width: 0;
+        }
+        .popover-inline-actions {
+          display: flex;
+          gap: 6px;
+          flex: 0 0 auto;
+        }
+        .popover-inline-actions .popover-button {
+          padding: 4px 10px;
+        }
+        .popover-button.is-ghost {
+          background: transparent;
+          color: #5b6070;
+          border-color: rgba(27, 31, 45, 0.16);
+        }
+        .popover-button.is-ghost:hover:not(:disabled) {
+          background: rgba(27, 31, 45, 0.05);
+          color: #242631;
+        }
+        .popover-button.is-danger {
+          background: transparent;
+          color: #d44c4c;
+          border-color: rgba(212, 76, 76, 0.3);
+        }
+        .popover-button.is-danger:hover:not(:disabled) {
+          background: rgba(212, 76, 76, 0.08);
+        }
+        .popover-members {
+          list-style: none;
+          margin: 0;
+          padding: 0;
+          display: flex;
+          flex-wrap: wrap;
+          gap: 6px;
+        }
+        .popover-member-chip {
+          background: rgba(255, 90, 138, 0.1);
+          color: #c43d6e;
+          padding: 3px 8px;
+          border-radius: 999px;
+          font-size: 11px;
+          line-height: 14px;
+          font-weight: 500;
+        }
+        .popover-member-chip.is-self {
+          background: rgba(0, 161, 214, 0.14);
+          color: #0078a0;
+        }
+        .popover-error {
+          color: #d44c4c;
+          font-size: 11px;
+          line-height: 16px;
+          margin: 0;
         }
         .quick-toggle {
           display: flex;
@@ -759,12 +1092,77 @@ export function createPageShareButtonController(args: {
             box-shadow: 0 10px 24px rgba(0, 0, 0, 0.28), 0 2px 8px rgba(0, 0, 0, 0.2);
           }
           .popover-status,
-          .popover-rows dt,
           .quick-toggle {
             color: #b8becd;
           }
-          .popover-rows dd {
+          .popover-section + .popover-section {
+            border-top-color: rgba(255, 255, 255, 0.1);
+          }
+          .popover-row-label {
+            color: #9499a0;
+          }
+          .popover-row-value {
             color: #f4f5f8;
+          }
+          .popover-link-button {
+            background: transparent;
+            border-color: rgba(255, 255, 255, 0.16);
+            color: #ff85a9;
+          }
+          .popover-link-button:hover:not(:disabled) {
+            background: rgba(255, 107, 150, 0.12);
+            border-color: rgba(255, 107, 150, 0.4);
+          }
+          .popover-link-button.is-copied {
+            background: rgba(102, 187, 51, 0.12);
+            border-color: rgba(102, 187, 51, 0.4);
+            color: #80d965;
+          }
+          .popover-input {
+            background: rgba(255, 255, 255, 0.04);
+            border-color: rgba(255, 255, 255, 0.16);
+            color: #f4f5f8;
+          }
+          .popover-input:focus {
+            border-color: #ff85a9;
+            box-shadow: 0 0 0 2px rgba(255, 107, 150, 0.18);
+          }
+          .popover-input:disabled {
+            background: rgba(255, 255, 255, 0.02);
+            color: #666;
+          }
+          .popover-button {
+            background: #ff6b96;
+          }
+          .popover-button:hover:not(:disabled) {
+            background: #ff85a9;
+          }
+          .popover-button.is-ghost {
+            background: transparent;
+            color: #b8becd;
+            border-color: rgba(255, 255, 255, 0.16);
+          }
+          .popover-button.is-ghost:hover:not(:disabled) {
+            background: rgba(255, 255, 255, 0.05);
+            color: #f4f5f8;
+          }
+          .popover-button.is-danger {
+            color: #f08080;
+            border-color: rgba(240, 128, 128, 0.3);
+          }
+          .popover-button.is-danger:hover:not(:disabled) {
+            background: rgba(240, 128, 128, 0.08);
+          }
+          .popover-member-chip {
+            background: rgba(255, 107, 150, 0.16);
+            color: #ffadc4;
+          }
+          .popover-member-chip.is-self {
+            background: rgba(0, 161, 214, 0.16);
+            color: #6ec3d8;
+          }
+          .popover-error {
+            color: #f08080;
           }
           .quick-toggle {
             border-top-color: rgba(255, 255, 255, 0.1);
@@ -782,8 +1180,40 @@ export function createPageShareButtonController(args: {
       </button>
       <div class="share-popover" hidden role="dialog" aria-label="${t("pageSharePopoverTitle")}">
         <div class="popover-heading">${t("pageSharePopoverTitle")}</div>
-        <p class="popover-status"></p>
-        <dl class="popover-rows"></dl>
+        <p class="popover-status" hidden></p>
+        <div class="popover-section popover-section-join" hidden>
+          <button class="popover-button popover-quick-create-button" type="button">${t("pageShareQuickCreate")}</button>
+          <form class="popover-form popover-join-form">
+            <div class="popover-input-row">
+              <input class="popover-input popover-join-input" type="text" inputmode="numeric" maxlength="4" autocomplete="off" placeholder="${t("pageShareJoinPlaceholder")}" aria-label="${t("pageShareJoinPlaceholder")}">
+              <button class="popover-button popover-join-button" type="submit">${t("pageShareJoin")}</button>
+            </div>
+            <p class="popover-error popover-join-error" hidden></p>
+          </form>
+        </div>
+        <div class="popover-section popover-section-joined" hidden>
+          <div class="popover-row popover-room-code-row">
+            <span class="popover-row-label">${t("pageShareRoomCode")}</span>
+            <span class="popover-row-value popover-room-code-value" title=""></span>
+            <button class="popover-link-button popover-copy-button" type="button">${t("pageShareRoomCodeCopy")}</button>
+          </div>
+          <div class="popover-row popover-shared-video-row">
+            <span class="popover-row-label">${t("pageShareSharedVideo")}</span>
+            <span class="popover-row-value popover-shared-video-value" title=""></span>
+          </div>
+          <div class="popover-row popover-nickname-row">
+            <span class="popover-row-label">${t("pageShareNickname")}</span>
+            <span class="popover-row-value popover-nickname-value" title=""></span>
+            <input class="popover-input popover-nickname-input" type="text" maxlength="32" autocomplete="off" aria-label="${t("pageShareNickname")}" hidden>
+            <button class="popover-link-button popover-edit-nickname-button" type="button">${t("pageShareNicknameEdit")}</button>
+          </div>
+          <p class="popover-error popover-nickname-error" hidden></p>
+          <div class="popover-row popover-members-row">
+            <span class="popover-row-label">${t("pageShareMembersHeading", { count: 0 })}</span>
+            <ul class="popover-members"></ul>
+          </div>
+          <button class="popover-button is-danger popover-leave-button" type="button">${t("pageShareLeaveRoom")}</button>
+        </div>
         <label class="quick-toggle">
           <span>${t("pageShareButtonQuickDisable")}</span>
           <span class="quick-toggle-switch">
@@ -799,8 +1229,32 @@ export function createPageShareButtonController(args: {
     button = shadowRoot.querySelector("button");
     popover = shadowRoot.querySelector(".share-popover");
     popoverStatus = shadowRoot.querySelector(".popover-status");
-    popoverRows = shadowRoot.querySelector(".popover-rows");
     popoverToggle = shadowRoot.querySelector(".quick-toggle-input");
+    joinSection = shadowRoot.querySelector(".popover-section-join");
+    joinForm = shadowRoot.querySelector(".popover-join-form");
+    joinInput = shadowRoot.querySelector(".popover-join-input");
+    _joinButton = shadowRoot.querySelector(".popover-join-button");
+    joinError = shadowRoot.querySelector(".popover-join-error");
+    quickCreateButton = shadowRoot.querySelector(
+      ".popover-quick-create-button",
+    );
+    joinedSection = shadowRoot.querySelector(".popover-section-joined");
+    roomCodeValueEl = shadowRoot.querySelector(".popover-room-code-value");
+    copyButton = shadowRoot.querySelector(".popover-copy-button");
+    sharedVideoValueEl = shadowRoot.querySelector(
+      ".popover-shared-video-value",
+    );
+    nicknameValueEl = shadowRoot.querySelector(".popover-nickname-value");
+    editNicknameButton = shadowRoot.querySelector(
+      ".popover-edit-nickname-button",
+    );
+    nicknameInput = shadowRoot.querySelector(".popover-nickname-input");
+    nicknameError = shadowRoot.querySelector(".popover-nickname-error");
+    membersHeadingEl = shadowRoot.querySelector(
+      ".popover-members-row .popover-row-label",
+    );
+    membersList = shadowRoot.querySelector(".popover-members");
+    leaveButton = shadowRoot.querySelector(".popover-leave-button");
     button?.addEventListener("pointerdown", handlePointerDown);
     button?.addEventListener("pointermove", handlePointerMove);
     button?.addEventListener("pointerup", handlePointerUp);
@@ -830,8 +1284,230 @@ export function createPageShareButtonController(args: {
       }
       void handleClick();
     });
+    joinForm?.addEventListener("submit", (event) => {
+      event.preventDefault();
+      void handleJoinSubmit();
+    });
+    joinInput?.addEventListener("focus", () => {
+      nicknameInputFocused = false;
+    });
+    quickCreateButton?.addEventListener("click", () => {
+      void handleQuickCreate();
+    });
+    copyButton?.addEventListener("click", () => {
+      void handleCopyRoomCode();
+    });
+    editNicknameButton?.addEventListener("click", () => {
+      if (nicknameEditing) {
+        cancelNicknameEditing();
+      } else {
+        startNicknameEditing();
+      }
+    });
+    nicknameInput?.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        void handleSaveNickname();
+      } else if (event.key === "Escape") {
+        cancelNicknameEditing();
+      }
+    });
+    nicknameInput?.addEventListener("focus", () => {
+      nicknameInputFocused = true;
+    });
+    nicknameInput?.addEventListener("blur", () => {
+      nicknameInputFocused = false;
+    });
+    leaveButton?.addEventListener("click", () => {
+      void handleLeaveRoom();
+    });
     mountTarget.appendChild(host);
     render();
+  }
+
+  function startNicknameEditing(): void {
+    nicknameEditing = true;
+    nicknameErrorMessage = null;
+    render();
+    if (nicknameInput) {
+      nicknameInput.focus();
+      nicknameInput.select();
+    }
+  }
+
+  function cancelNicknameEditing(): void {
+    nicknameEditing = false;
+    nicknameErrorMessage = null;
+    render();
+  }
+
+  async function handleCopyRoomCode(): Promise<void> {
+    const code = popoverContext?.roomCode;
+    if (!code) {
+      return;
+    }
+    const value = code;
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(value);
+      } else {
+        const fallback = document.createElement("textarea");
+        fallback.value = value;
+        fallback.style.position = "fixed";
+        fallback.style.opacity = "0";
+        document.body.appendChild(fallback);
+        fallback.focus();
+        fallback.select();
+        document.execCommand("copy");
+        fallback.remove();
+      }
+      setCopyButtonCopied();
+    } catch (error) {
+      args.toastPresenter.show(
+        t("pageSharePopoverError", {
+          error: error instanceof Error ? error.message : String(error),
+        }),
+      );
+    }
+  }
+
+  function setCopyButtonCopied(): void {
+    if (copyButtonResetTimer) {
+      window.clearTimeout(copyButtonResetTimer);
+      copyButtonResetTimer = 0;
+    }
+    copyButtonState = "copied";
+    render();
+    copyButtonResetTimer = window.setTimeout(() => {
+      copyButtonResetTimer = 0;
+      copyButtonState = "idle";
+      render();
+    }, 1400);
+  }
+
+  async function handleJoinSubmit(): Promise<void> {
+    if (joinPending) {
+      return;
+    }
+    const rawValue = joinInput?.value ?? "";
+    const trimmed = rawValue.trim();
+    if (!/^\d{4}$/.test(trimmed)) {
+      joinErrorMessage = t("errorInvalidInviteFormat");
+      render();
+      return;
+    }
+    joinErrorMessage = null;
+    joinPending = true;
+    render();
+    try {
+      await args.runtimeSendMessage({
+        type: "content:join-room",
+        roomCode: trimmed,
+        joinToken: null,
+      });
+      // Refresh the popover once the server replies (or after a small grace
+      // period) so the joined section takes over.
+      window.setTimeout(() => {
+        joinPending = false;
+        void refreshPopoverContext();
+      }, 800);
+    } catch (error) {
+      joinPending = false;
+      joinErrorMessage = t("pageShareJoinFailed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      render();
+    }
+  }
+
+  async function handleQuickCreate(): Promise<void> {
+    if (quickCreatePending) {
+      return;
+    }
+    quickCreatePending = true;
+    render();
+    try {
+      await args.runtimeSendMessage({ type: "content:create-room" });
+      // The background resolves the create-room flow once room:created lands.
+      // Wait briefly then auto-share the current video into the fresh room and
+      // refresh the popover so the joined section appears.
+      window.setTimeout(() => {
+        void autoShareCurrentVideoAfterCreate().finally(() => {
+          quickCreatePending = false;
+          void refreshPopoverContext();
+        });
+      }, QUICK_CREATE_SETTLE_DELAY_MS);
+    } catch (error) {
+      quickCreatePending = false;
+      args.toastPresenter.show(
+        t("pageShareQuickCreateFailed", {
+          error: error instanceof Error ? error.message : String(error),
+        }),
+      );
+      render();
+    }
+  }
+
+  async function autoShareCurrentVideoAfterCreate(): Promise<void> {
+    // After a quick-create, if the current tab is a Bilibili video page, share
+    // it into the freshly created room automatically. The room is guaranteed to
+    // exist here (we just created it), so no confirm is needed. If there is no
+    // playable video, silently do nothing — never block create success.
+    try {
+      const payload = await args.resolveCurrentSharePayload();
+      if (!payload) {
+        return;
+      }
+      await args.runtimeSendMessage({ type: "content:share-current-video" });
+    } catch {
+      // Auto-share is best-effort; swallow errors so create still succeeds.
+    }
+  }
+
+  async function handleSaveNickname(): Promise<void> {
+    if (!nicknameInput) {
+      return;
+    }
+    const next = nicknameInput.value.trim();
+    if (!next) {
+      nicknameErrorMessage = t("pageSharePopoverError", {
+        error: t("pageShareNickname"),
+      });
+      render();
+      return;
+    }
+    nicknameErrorMessage = null;
+    try {
+      await args.runtimeSendMessage({
+        type: "content:set-display-name",
+        displayName: next,
+      });
+      nicknameEditing = false;
+      args.toastPresenter.show(t("pageShareNicknameSaved"));
+      void refreshPopoverContext();
+    } catch (error) {
+      nicknameErrorMessage = t("pageSharePopoverError", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      render();
+    }
+  }
+
+  async function handleLeaveRoom(): Promise<void> {
+    if (leavePending) {
+      return;
+    }
+    leavePending = true;
+    render();
+    try {
+      await args.runtimeSendMessage({ type: "content:leave-room" });
+      nicknameEditing = false;
+      nicknameErrorMessage = null;
+      void refreshPopoverContext();
+    } finally {
+      leavePending = false;
+      render();
+    }
   }
 
   function handlePointerDown(event: PointerEvent): void {

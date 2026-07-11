@@ -9,7 +9,7 @@ test("accepts a valid room:created message", () => {
     isServerMessage({
       type: "room:created",
       payload: {
-        roomCode: "ABC123",
+        roomCode: "1234",
         memberId: "member-1",
         joinToken: VALID_TOKEN,
         memberToken: VALID_TOKEN,
@@ -24,7 +24,7 @@ test("accepts a valid room:state message", () => {
     isServerMessage({
       type: "room:state",
       payload: {
-        roomCode: "ABC123",
+        roomCode: "1234",
         sharedVideo: {
           videoId: "BV1xx411c7mD",
           url: "https://www.bilibili.com/video/BV1xx411c7mD?p=2",
@@ -53,7 +53,7 @@ test("accepts room:state when member ids use UUIDs", () => {
     isServerMessage({
       type: "room:state",
       payload: {
-        roomCode: "ABC123",
+        roomCode: "1234",
         sharedVideo: {
           videoId: "BV1xx411c7mD",
           url: "https://www.bilibili.com/video/BV1xx411c7mD?p=2",
@@ -87,7 +87,7 @@ test("accepts room:state when playback sync intent is explicit-ratechange", () =
     isServerMessage({
       type: "room:state",
       payload: {
-        roomCode: "ABC123",
+        roomCode: "1234",
         sharedVideo: {
           videoId: "BV1xx411c7mD",
           url: "https://www.bilibili.com/video/BV1xx411c7mD?p=2",
@@ -116,7 +116,7 @@ test("accepts room:joined when memberId uses max-compatible actor format", () =>
     isServerMessage({
       type: "room:joined",
       payload: {
-        roomCode: "ABC123",
+        roomCode: "1234",
         memberId: "member_01:host",
         memberToken: VALID_TOKEN,
       },
@@ -130,7 +130,7 @@ test("accepts room member delta messages", () => {
     isServerMessage({
       type: "room:member-joined",
       payload: {
-        roomCode: "ABC123",
+        roomCode: "1234",
         member: { id: "member-1", name: "Alice" },
       },
     }),
@@ -140,7 +140,7 @@ test("accepts room member delta messages", () => {
     isServerMessage({
       type: "room:member-left",
       payload: {
-        roomCode: "ABC123",
+        roomCode: "1234",
         member: { id: "member-2", name: "Bob" },
       },
     }),
@@ -153,7 +153,7 @@ test("rejects room member delta messages with invalid member payloads", () => {
     isServerMessage({
       type: "room:member-joined",
       payload: {
-        roomCode: "ABC123",
+        roomCode: "1234",
         member: { id: "member 1", name: "Alice" },
       },
     }),
@@ -163,7 +163,7 @@ test("rejects room member delta messages with invalid member payloads", () => {
     isServerMessage({
       type: "room:member-left",
       payload: {
-        roomCode: "ABC123",
+        roomCode: "1234",
         member: { id: "member-2", name: "x".repeat(33) },
       },
     }),
@@ -176,7 +176,7 @@ test("rejects room:created when memberId format is invalid", () => {
     isServerMessage({
       type: "room:created",
       payload: {
-        roomCode: "ABC123",
+        roomCode: "1234",
         memberId: "member 1",
         joinToken: VALID_TOKEN,
         memberToken: VALID_TOKEN,
@@ -191,7 +191,7 @@ test("accepts room:state when playback carries userInitiated:true", () => {
     isServerMessage({
       type: "room:state",
       payload: {
-        roomCode: "ABC123",
+        roomCode: "1234",
         sharedVideo: {
           videoId: "BV1xx411c7mD",
           url: "https://www.bilibili.com/video/BV1xx411c7mD?p=2",
@@ -220,7 +220,7 @@ test("rejects room:state when playback userInitiated is non-boolean", () => {
     isServerMessage({
       type: "room:state",
       payload: {
-        roomCode: "ABC123",
+        roomCode: "1234",
         sharedVideo: {
           videoId: "BV1xx411c7mD",
           url: "https://www.bilibili.com/video/BV1xx411c7mD?p=2",
@@ -249,7 +249,7 @@ test("accepts room:state when playback carries naturalEnd:true", () => {
     isServerMessage({
       type: "room:state",
       payload: {
-        roomCode: "ABC123",
+        roomCode: "1234",
         sharedVideo: {
           videoId: "BV1xx411c7mD",
           url: "https://www.bilibili.com/video/BV1xx411c7mD?p=2",
@@ -278,7 +278,7 @@ test("rejects room:state when playback naturalEnd is non-boolean", () => {
     isServerMessage({
       type: "room:state",
       payload: {
-        roomCode: "ABC123",
+        roomCode: "1234",
         sharedVideo: {
           videoId: "BV1xx411c7mD",
           url: "https://www.bilibili.com/video/BV1xx411c7mD?p=2",
@@ -307,7 +307,7 @@ test("rejects room:state when playback sync intent is invalid", () => {
     isServerMessage({
       type: "room:state",
       payload: {
-        roomCode: "ABC123",
+        roomCode: "1234",
         sharedVideo: {
           videoId: "BV1xx411c7mD",
           url: "https://www.bilibili.com/video/BV1xx411c7mD?p=2",
@@ -336,7 +336,7 @@ test("accepts room:state when sharedByDisplayName is set on the shared video", (
     isServerMessage({
       type: "room:state",
       payload: {
-        roomCode: "ABC123",
+        roomCode: "1234",
         sharedVideo: {
           videoId: "BV1xx411c7mD",
           url: "https://www.bilibili.com/video/BV1xx411c7mD",
@@ -357,7 +357,7 @@ test("rejects room:state when sharedByDisplayName exceeds the display-name bound
     isServerMessage({
       type: "room:state",
       payload: {
-        roomCode: "ABC123",
+        roomCode: "1234",
         sharedVideo: {
           videoId: "BV1xx411c7mD",
           url: "https://www.bilibili.com/video/BV1xx411c7mD",
@@ -378,7 +378,7 @@ test("rejects room:state when sharedByMemberId format is invalid", () => {
     isServerMessage({
       type: "room:state",
       payload: {
-        roomCode: "ABC123",
+        roomCode: "1234",
         sharedVideo: {
           videoId: "BV1xx411c7mD",
           url: "https://www.bilibili.com/video/BV1xx411c7mD",
@@ -398,7 +398,7 @@ test("rejects room:state when shared video url is invalid", () => {
     isServerMessage({
       type: "room:state",
       payload: {
-        roomCode: "ABC123",
+        roomCode: "1234",
         sharedVideo: {
           videoId: "BV1xx411c7mD",
           url: "https://example.com/video/BV1xx411c7mD",
@@ -417,7 +417,7 @@ test("rejects room:state when playback actorId format is invalid", () => {
     isServerMessage({
       type: "room:state",
       payload: {
-        roomCode: "ABC123",
+        roomCode: "1234",
         sharedVideo: null,
         playback: {
           url: "https://www.bilibili.com/video/BV1xx411c7mD?p=2",
@@ -441,7 +441,7 @@ test("rejects room:state when members contain invalid items", () => {
     isServerMessage({
       type: "room:state",
       payload: {
-        roomCode: "ABC123",
+        roomCode: "1234",
         sharedVideo: null,
         playback: null,
         members: [{ id: "member-1", name: 123 }],
@@ -482,7 +482,7 @@ test("accepts room:created with serverProtocolVersion", () => {
     isServerMessage({
       type: "room:created",
       payload: {
-        roomCode: "ABC123",
+        roomCode: "1234",
         memberId: "member-1",
         joinToken: VALID_TOKEN,
         memberToken: VALID_TOKEN,
@@ -498,7 +498,7 @@ test("accepts room:joined with serverProtocolVersion", () => {
     isServerMessage({
       type: "room:joined",
       payload: {
-        roomCode: "ABC123",
+        roomCode: "1234",
         memberId: "member-1",
         memberToken: VALID_TOKEN,
         serverProtocolVersion: 1,
@@ -513,7 +513,7 @@ test("rejects room:created when serverProtocolVersion is not a positive integer"
     isServerMessage({
       type: "room:created",
       payload: {
-        roomCode: "ABC123",
+        roomCode: "1234",
         memberId: "member-1",
         joinToken: VALID_TOKEN,
         memberToken: VALID_TOKEN,
@@ -529,7 +529,7 @@ test("rejects room:joined when serverProtocolVersion is negative", () => {
     isServerMessage({
       type: "room:joined",
       payload: {
-        roomCode: "ABC123",
+        roomCode: "1234",
         memberId: "member-1",
         memberToken: VALID_TOKEN,
         serverProtocolVersion: -1,

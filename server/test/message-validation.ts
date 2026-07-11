@@ -482,7 +482,7 @@ test("creates a room with joinToken and memberToken", async () => {
       );
       const [created, roomState] = await responsesPromise;
       assert.equal(created.type, "room:created");
-      assert.equal(created.payload.roomCode.length, 6);
+      assert.equal(created.payload.roomCode.length, 4);
       assert.ok(created.payload.joinToken.length >= 16);
       assert.ok(created.payload.memberToken.length >= 16);
       assert.equal(roomState.type, "room:state");

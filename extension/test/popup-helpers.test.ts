@@ -1,6 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { escapeHtml, parseInviteValue } from "../src/popup/helpers";
+import {
+  escapeHtml,
+  formatInviteDraft,
+  parseInviteValue,
+} from "../src/popup/helpers";
 
 test("escapeHtml escapes html-sensitive characters", () => {
   assert.equal(
@@ -20,15 +24,38 @@ test("escapeHtml coerces non-string values safely", () => {
 });
 
 test("parseInviteValue extracts roomCode and joinToken from an invite string", () => {
-  assert.deepEqual(parseInviteValue("abc123:join-token-123456"), {
-    roomCode: "ABC123",
+  assert.deepEqual(parseInviteValue("1234:join-token-123456"), {
+    roomCode: "1234",
     joinToken: "join-token-123456",
   });
+});
+
+test("parseInviteValue accepts a bare 4-digit room code as a public join", () => {
+  assert.deepEqual(parseInviteValue("1234"), {
+    roomCode: "1234",
+    joinToken: null,
+  });
+});
+
+test("formatInviteDraft omits the joinToken segment for public joins", () => {
+  // 4-digit room codes are public: the join token is never appended even
+  // when the caller knows one (e.g. an older room still carrying a stored
+  // token), because the server will accept the bare code.
+  assert.equal(
+    formatInviteDraft({ roomCode: "1234", joinToken: null }),
+    "1234",
+  );
+  assert.equal(
+    formatInviteDraft({ roomCode: "1234", joinToken: "join-token-123456" }),
+    "1234",
+  );
+  assert.equal(formatInviteDraft(null), "");
 });
 
 test("parseInviteValue returns null for malformed input", () => {
   assert.equal(parseInviteValue("ABC123"), null);
   assert.equal(parseInviteValue(""), null);
   assert.equal(parseInviteValue("AB12:join-token-123456"), null);
-  assert.equal(parseInviteValue("ABC123:short-token"), null);
+  assert.equal(parseInviteValue("123:join-token-123456"), null);
+  assert.equal(parseInviteValue("12345:join-token-123456"), null);
 });

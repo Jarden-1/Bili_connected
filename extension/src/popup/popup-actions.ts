@@ -1,8 +1,7 @@
 import type { BackgroundPopupState } from "../shared/messages";
 import { getUiLanguage, t } from "../shared/i18n";
 import { areSharedVideoUrlsEqual } from "../shared/url";
-import { parseInviteValue } from "./helpers";
-import { formatInviteDraft } from "./popup-render";
+import { formatInviteDraft, parseInviteValue } from "./helpers";
 import { sendPopupAction, sendPopupActiveVideoQuery } from "./popup-port";
 import type { PopupUiStateStore } from "./popup-store";
 import {
@@ -58,6 +57,12 @@ export function bindPopupActions(args: {
       args.applyActionState(state);
       void args.sendPopupLog("Create room message resolved");
       patchUiState({ roomActionPending: false });
+      // If the room was created successfully and the active tab is a Bilibili
+      // video page, auto-share it into the fresh room. A missing/invalid video
+      // is not an error here: the create action still succeeded.
+      if (state.roomCode) {
+        await autoShareActiveVideoAfterCreate();
+      }
     } finally {
       if (args.uiStateStore.getState().roomActionPending) {
         patchUiState({ roomActionPending: false });
@@ -92,10 +97,10 @@ export function bindPopupActions(args: {
     void args.sendPopupLog("Leave room button clicked");
     patchUiState({
       localStatusMessage: null,
-      roomCodeDraft: formatInviteDraft(
-        uiState.lastKnownRoomCode,
-        args.getPopupState()?.joinToken ?? null,
-      ),
+      roomCodeDraft: formatInviteDraft({
+        roomCode: uiState.lastKnownRoomCode,
+        joinToken: args.getPopupState()?.joinToken ?? null,
+      }),
       roomActionPending: true,
     });
     try {
@@ -155,6 +160,51 @@ export function bindPopupActions(args: {
     args.applyActionState(state);
   });
 
+  refs.nicknameEditButton.addEventListener("click", () => {
+    if (args.uiStateStore.getState().nicknameEditing) {
+      patchUiState({ nicknameEditing: false, localStatusMessage: null });
+      return;
+    }
+    const current = args.getPopupState()?.displayName ?? "";
+    refs.nicknameInput.value = current;
+    patchUiState({ nicknameEditing: true, localStatusMessage: null });
+    refs.nicknameInput.focus();
+    refs.nicknameInput.select();
+  });
+
+  refs.nicknameInput.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      void saveNickname();
+    } else if (event.key === "Escape") {
+      patchUiState({ nicknameEditing: false, localStatusMessage: null });
+    }
+  });
+
+  refs.nicknameInput.addEventListener("focus", () => {
+    patchUiState({ nicknameInputFocused: true });
+  });
+  refs.nicknameInput.addEventListener("blur", () => {
+    patchUiState({ nicknameInputFocused: false });
+  });
+
+  async function saveNickname(): Promise<void> {
+    const next = refs.nicknameInput.value.trim();
+    if (!next) {
+      return;
+    }
+    patchUiState({ localStatusMessage: null });
+    const state = await sendPopupAction({
+      type: "popup:set-display-name",
+      displayName: next,
+    });
+    args.applyActionState(state);
+    patchUiState({
+      nicknameEditing: false,
+      localStatusMessage: t("pageShareNicknameSaved"),
+    });
+  }
+
   refs.roomCodeInput.addEventListener("keydown", async (event) => {
     if (event.key !== "Enter") {
       return;
@@ -173,16 +223,19 @@ export function bindPopupActions(args: {
     args.applyRoomActionControlState(refs);
     const inviteText = refs.roomCodeInput.value.trim();
     const invite = parseInviteValue(inviteText);
+    // Keep the input as-is when it is a bare 4-digit code; only reformat when
+    // the user typed a full "roomCode:joinToken" pair (so the auto-complete
+    // for known rooms still trims trailing whitespace).
     patchUiState({
-      roomCodeDraft: invite
-        ? `${invite.roomCode}:${invite.joinToken}`
-        : inviteText,
+      roomCodeDraft: invite ? formatInviteDraft(invite) : inviteText,
     });
     if (args.uiStateStore.getState().localStatusMessage) {
       patchUiState({ localStatusMessage: null });
     }
     if (invite) {
-      void args.sendPopupLog(`Invite input changed room=${invite.roomCode}`);
+      void args.sendPopupLog(
+        `Invite input changed room=${invite.roomCode} hasToken=${invite.joinToken ? "yes" : "no"}`,
+      );
     }
   });
 
@@ -229,6 +282,34 @@ export function bindPopupActions(args: {
     event.preventDefault();
     await saveServerUrl();
   });
+
+  async function autoShareActiveVideoAfterCreate(): Promise<void> {
+    // Silent, best-effort share right after creating a room. If the active tab
+    // is not a Bilibili video page (no payload), we simply do nothing — the
+    // room is still created and the user sees no error.
+    let activeVideo;
+    try {
+      activeVideo = await sendPopupActiveVideoQuery();
+    } catch (error) {
+      void args.sendPopupLog(
+        `Auto-share after create skipped: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      return;
+    }
+    if (!activeVideo.ok || !activeVideo.payload) {
+      void args.sendPopupLog(
+        "Auto-share after create skipped: no active video on current tab",
+      );
+      return;
+    }
+    void args.sendPopupLog(
+      "Auto-sharing active video into freshly created room",
+    );
+    await chrome.runtime.sendMessage({ type: "popup:share-current-video" });
+    if (args.getPopupState()) {
+      args.render();
+    }
+  }
 
   async function handleShareCurrentVideo(): Promise<void> {
     const state = args.getPopupState() ?? (await args.queryState());
@@ -313,7 +394,7 @@ export function bindPopupActions(args: {
     patchUiState({
       localRoomEntryPending: true,
       localStatusMessage: null,
-      roomCodeDraft: `${invite.roomCode}:${invite.joinToken}`,
+      roomCodeDraft: formatInviteDraft(invite),
     });
     void args.sendPopupLog(`${args2.reasonLabel} room=${invite.roomCode}`);
     patchUiState({ roomActionPending: true });

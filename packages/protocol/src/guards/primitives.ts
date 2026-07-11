@@ -6,7 +6,7 @@ const PLAYBACK_PLAY_STATES: PlaybackPlayState[] = [
   "paused",
   "buffering",
 ];
-const ROOM_CODE_PATTERN = /^[A-Z0-9]{6}$/;
+const ROOM_CODE_PATTERN = /^\d{4}$/;
 const ACTOR_ID_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9:_-]{0,63})$/;
 const VIDEO_ID_PATTERN =
   /^(?:BV[0-9A-Za-z]+|(?:av|ep|ss)\d+)(?::(?:p[1-9]\d*|[1-9]\d*))?$/;

@@ -2,8 +2,6 @@ import type { PlaybackState, SharedVideo } from "@bili-syncplay/protocol";
 import type { RoomListQuery } from "./admin/types.js";
 import type { ActiveRoom, PersistedRoom, RoomStoreRoomState } from "./types.js";
 
-const ROOM_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-
 export type CreatePersistedRoomInput = {
   code: string;
   joinToken: string;
@@ -57,9 +55,8 @@ type CreateInMemoryRoomStoreOptions = {
 };
 
 export function createRoomCode(): string {
-  return Array.from(
-    { length: 4 },
-    () => Math.floor(Math.random() * 10).toString(),
+  return Array.from({ length: 4 }, () =>
+    Math.floor(Math.random() * 10).toString(),
   ).join("");
 }
 

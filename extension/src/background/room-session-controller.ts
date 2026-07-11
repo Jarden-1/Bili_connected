@@ -33,7 +33,7 @@ type PendingMemberDelta = {
 const DEFAULT_BOOTSTRAP_ROOM_STATE_TIMEOUT_MS = 5_000;
 
 export interface RoomSessionController {
-  sendJoinRequest(targetRoomCode: string, targetJoinToken: string): void;
+  sendJoinRequest(targetRoomCode: string, targetJoinToken: string | null): void;
   waitForJoinAttemptResult(timeoutMs?: number): Promise<JoinAttemptResult>;
   handleServerMessage(message: ServerMessage): Promise<void>;
   clearCurrentRoomContext(
@@ -285,14 +285,14 @@ export function createRoomSessionController(args: {
 
   function sendJoinRequest(
     targetRoomCode: string,
-    targetJoinToken: string,
+    targetJoinToken: string | null,
   ): void {
     args.roomSessionState.pendingJoinRequestSent = true;
     args.sendToServer({
       type: "room:join",
       payload: {
         roomCode: targetRoomCode,
-        joinToken: targetJoinToken,
+        ...(targetJoinToken ? { joinToken: targetJoinToken } : {}),
         ...(args.roomSessionState.memberToken
           ? { memberToken: args.roomSessionState.memberToken }
           : {}),
@@ -647,18 +647,18 @@ export function createRoomSessionController(args: {
 
   async function requestJoinRoom(
     roomCode: string,
-    joinToken: string,
+    joinToken: string | null,
   ): Promise<void> {
     args.resetReconnectState();
     clearPendingMemberDeltas();
     stopWaitingForBootstrapRoomState();
     args.roomSessionState.pendingCreateRoom = false;
     args.roomSessionState.pendingJoinRoomCode = roomCode.trim().toUpperCase();
-    args.roomSessionState.pendingJoinToken = joinToken.trim();
+    args.roomSessionState.pendingJoinToken = joinToken?.trim() || null;
     args.roomSessionState.pendingJoinRequestSent = false;
     args.log(
       "background",
-      `Popup requested join for ${args.roomSessionState.pendingJoinRoomCode}`,
+      `Popup requested join for ${args.roomSessionState.pendingJoinRoomCode} hasToken=${joinToken ? "yes" : "no"}`,
     );
     args.roomSessionState.roomCode = null;
     args.roomSessionState.joinToken = null;

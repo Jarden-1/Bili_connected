@@ -2,7 +2,12 @@ import { createHash } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import { Redis } from "ioredis";
 import type { MetricsCollector } from "./admin/metrics.js";
-import type { ActiveRoom, ClusterNodeStatus, LogEvent, Session } from "./types.js";
+import type {
+  ActiveRoom,
+  ClusterNodeStatus,
+  LogEvent,
+  Session,
+} from "./types.js";
 import {
   createInMemoryRuntimeStore,
   type RuntimeStore,

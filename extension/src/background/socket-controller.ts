@@ -37,7 +37,10 @@ export function createSocketController(args: {
   startClockSyncTimer: () => void;
   clearPendingLocalShare: (reason: string) => void;
   getPendingLocalShareGeneration: () => number | null;
-  sendJoinRequest: (targetRoomCode: string, targetJoinToken: string) => void;
+  sendJoinRequest: (
+    targetRoomCode: string,
+    targetJoinToken: string | null,
+  ) => void;
   sendToServer: (message: ClientMessage) => void;
   handleServerMessage: (message: ServerMessage) => Promise<void>;
   buildConnectionCheckUrl: (serverUrl: string) => string | null;
@@ -240,18 +243,19 @@ export function createSocketController(args: {
         });
       } else if (
         args.roomSessionState.pendingJoinRoomCode &&
-        args.roomSessionState.pendingJoinToken &&
         !args.roomSessionState.pendingJoinRequestSent
       ) {
+        // Public rooms have no join token, so we must not gate the join
+        // request on `pendingJoinToken`. `sendJoinRequest` omits the
+        // `joinToken` field when it is null/undefined.
         args.roomSessionState.awaitingFreshRoomState = true;
         args.sendJoinRequest(
           args.roomSessionState.pendingJoinRoomCode,
           args.roomSessionState.pendingJoinToken,
         );
-      } else if (
-        args.roomSessionState.roomCode &&
-        args.roomSessionState.joinToken
-      ) {
+      } else if (args.roomSessionState.roomCode) {
+        // Reconnect/rejoin path. A token-less public room must also be able
+        // to rejoin, so do not require `joinToken` here.
         args.roomSessionState.awaitingFreshRoomState = true;
         args.sendJoinRequest(
           args.roomSessionState.roomCode,

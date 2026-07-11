@@ -146,6 +146,8 @@ function render(): void {
     lastKnownRoomCode: uiState.lastKnownRoomCode,
     copyRoomSuccess: uiState.copyRoomSuccess,
     copyLogsSuccess: uiState.copyLogsSuccess,
+    nicknameEditing: uiState.nicknameEditing,
+    nicknameInputFocused: uiState.nicknameInputFocused,
     sendPopupLog,
   });
 }

@@ -131,7 +131,7 @@ export function createRoomService(options: {
   joinRoomForSession: (
     session: Session,
     roomCode: string,
-    joinToken: string,
+    joinToken: string | null,
     displayName?: string,
     previousMemberToken?: string,
   ) => Promise<{ room: PersistedRoom; memberToken: string }>;
@@ -653,9 +653,11 @@ export function createRoomService(options: {
     session: Session;
     room: PersistedRoom;
     roomCode: string;
-    joinToken: string;
+    joinToken: string | null;
     previousMemberToken?: string;
   }): Promise<JoinTargetState> {
+    // Public 4-digit rooms can be joined without a token; when the caller
+    // supplies one, it must match the server-stored joinToken.
     if (args.joinToken && args.room.joinToken !== args.joinToken) {
       rejectJoinToken(
         args.session,
@@ -698,7 +700,7 @@ export function createRoomService(options: {
   async function persistJoinedRoom(args: {
     session: Session;
     roomCode: string;
-    joinToken: string;
+    joinToken: string | null;
     previousMemberToken?: string;
   }): Promise<PersistJoinedRoomResult | null> {
     return withVersionRetry(args.roomCode, async (room) => {

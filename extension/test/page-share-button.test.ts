@@ -299,18 +299,28 @@ test("page share popover view model displays current room info", () => {
       error: null,
       context: {
         ok: true,
-        roomCode: "ROOM01",
+        roomCode: "1234",
+        joinToken: null,
         memberCount: 2,
+        displayName: "Alice",
+        members: [
+          { id: "member-1", name: "Alice" },
+          { id: "member-2", name: "Bob" },
+        ],
         sharedVideo: currentPayload.video,
       },
     }),
     {
       status: null,
-      rows: [
-        { label: "房间码", value: "ROOM01" },
-        { label: "成员", value: "2人" },
-        { label: "共享视频", value: "New Video" },
+      joined: true,
+      roomCode: "1234",
+      joinToken: null,
+      members: [
+        { id: "member-1", name: "Alice" },
+        { id: "member-2", name: "Bob" },
       ],
+      displayName: "Alice",
+      sharedVideoTitle: "New Video",
     },
   );
 });
@@ -326,7 +336,12 @@ test("page share popover view model reports loading and no room states", () => {
     }),
     {
       status: "读取房间信息...",
-      rows: [],
+      joined: false,
+      roomCode: null,
+      joinToken: null,
+      members: [],
+      displayName: null,
+      sharedVideoTitle: null,
     },
   );
   assert.deepEqual(
@@ -336,13 +351,21 @@ test("page share popover view model reports loading and no room states", () => {
       context: {
         ok: true,
         roomCode: null,
+        joinToken: null,
         memberCount: null,
+        displayName: null,
+        members: [],
         sharedVideo: null,
       },
     }),
     {
       status: "未加入房间",
-      rows: [],
+      joined: false,
+      roomCode: null,
+      joinToken: null,
+      members: [],
+      displayName: null,
+      sharedVideoTitle: null,
     },
   );
 });

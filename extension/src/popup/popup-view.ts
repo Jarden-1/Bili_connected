@@ -7,6 +7,9 @@ export interface PopupRefs {
   roomPanelIdle: HTMLElement;
   roomCodeInput: HTMLInputElement;
   copyRoomButton: HTMLButtonElement;
+  nicknameValue: HTMLElement;
+  nicknameEditButton: HTMLButtonElement;
+  nicknameInput: HTMLInputElement;
   shareCurrentVideoButton: HTMLButtonElement;
   sharedVideoCard: HTMLButtonElement;
   sharedVideoTitle: HTMLElement;
@@ -37,6 +40,9 @@ export function collectPopupRefs(): PopupRefs {
     roomPanelIdle: getById("room-panel-idle"),
     roomCodeInput: getById("room-code") as HTMLInputElement,
     copyRoomButton: getById("copy-room") as HTMLButtonElement,
+    nicknameValue: getById("popup-nickname-value"),
+    nicknameEditButton: getById("popup-edit-nickname") as HTMLButtonElement,
+    nicknameInput: getById("popup-nickname-input") as HTMLInputElement,
     shareCurrentVideoButton: getById(
       "share-current-video",
     ) as HTMLButtonElement,

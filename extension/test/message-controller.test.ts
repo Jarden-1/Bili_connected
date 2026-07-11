@@ -435,7 +435,13 @@ test("message controller returns share context for content page actions", async 
   assert.deepEqual(response, {
     ok: true,
     roomCode: "ROOM88",
+    joinToken: null,
     memberCount: 2,
+    displayName: "Alice",
+    members: [
+      { id: "member-88", name: "Alice" },
+      { id: "member-99", name: "Bob" },
+    ],
     sharedVideo: {
       videoId: "BV199W9zEEcH",
       url: "https://www.bilibili.com/video/BV199W9zEEcH",
@@ -1533,6 +1539,10 @@ test("message controller skips auto-share next video when the room moved past th
 });
 
 test("message controller persists content:report-user and forwards profile update for active room members", async () => {
+  // content:report-user is an auto-report from Bilibili login that only
+  // seeds the display name once; once set, subsequent reports must be
+  // ignored so user-edited nicknames (set via content:set-display-name)
+  // survive page reloads.
   const harness = createControllerHarness();
   let response: unknown;
 
@@ -1547,9 +1557,26 @@ test("message controller persists content:report-user and forwards profile updat
     },
   );
 
+  // Alice was set in the harness; Bob must NOT clobber it.
+  assert.equal(harness.roomSessionState.displayName, "Alice");
+  assert.equal(harness.calls.persistProfileState, 0);
+  assert.equal(harness.calls.persistState, 0);
+  assert.deepEqual(harness.calls.sendToServer, []);
+  assert.deepEqual(response, { ok: true });
+
+  // Clear the seed and try again — this time the auto-report should win.
+  harness.roomSessionState.displayName = null;
+  await harness.controller.handleRuntimeMessage(
+    {
+      type: "content:report-user",
+      payload: { displayName: "Bob" },
+    },
+    {},
+    () => undefined,
+  );
+
   assert.equal(harness.roomSessionState.displayName, "Bob");
   assert.equal(harness.calls.persistProfileState, 1);
-  assert.equal(harness.calls.persistState, 0);
   assert.deepEqual(harness.calls.sendToServer, [
     {
       type: "profile:update",
@@ -1559,7 +1586,6 @@ test("message controller persists content:report-user and forwards profile updat
       },
     },
   ]);
-  assert.deepEqual(response, { ok: true });
 });
 
 test("message controller forwards content playback updates only for the active shared tab", async () => {
