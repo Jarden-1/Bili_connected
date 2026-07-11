@@ -36,6 +36,8 @@
   "content_scripts": [
     {
       "matches": [
+        "https://www.bilibili.com/",
+        "https://www.bilibili.com/index.html",
         "https://www.bilibili.com/video/*",
         "https://www.bilibili.com/bangumi/play/*",
         "https://www.bilibili.com/festival/*",

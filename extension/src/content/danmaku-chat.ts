@@ -65,6 +65,41 @@ const VIDEO_AREA_SELECTORS = [
   ".bilibili-player",
 ];
 
+// Where to anchor our standalone room-chat input when Bilibili's native danmaku
+// input is unavailable (danmaku turned off). We prefer the player control bar
+// so the input sits in the same visual region as the native one would.
+const CONTROL_BAR_SELECTORS = [
+  ".bpx-player-control-bottom",
+  ".bpx-player-controls",
+  ".bpx-player-sending-area",
+  ".bpx-player-control-wrap",
+];
+
+// Detects whether Bilibili's native danmaku input is truly usable right now.
+// When the user turns danmaku off, Bilibili either removes the input, disables
+// it, or collapses it to zero size — any of which means we can no longer
+// piggy-back on it and must fall back to our own standalone input.
+function isElementUsable(el: HTMLElement | null): el is HTMLElement {
+  if (!el || !el.isConnected) {
+    return false;
+  }
+  if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
+    if (el.disabled || el.readOnly) {
+      return false;
+    }
+  }
+  const cs = window.getComputedStyle(el);
+  if (
+    cs.display === "none" ||
+    cs.visibility === "hidden" ||
+    Number.parseFloat(cs.opacity || "1") === 0
+  ) {
+    return false;
+  }
+  const rect = el.getBoundingClientRect();
+  return rect.width > 1 && rect.height > 1;
+}
+
 function getMemberColor(id: string): string {
   let hash = 0;
   for (let i = 0; i < id.length; i++) {
@@ -137,6 +172,11 @@ export function createDanmakuChatController(args: {
   // it on unmount. While our "发送到房间" button is attached we square off the
   // send button's right corners so the two controls read as one seamless pill.
   let sendBtnOriginalBorderRadius: string | null = null;
+  // Standalone room-chat input, mounted only when Bilibili's native danmaku
+  // input is unavailable (danmaku turned off). This guarantees the user can
+  // always type and send to the room regardless of the danmaku on/off state.
+  let standaloneHost: HTMLDivElement | null = null;
+  let standaloneInput: HTMLInputElement | null = null;
   let started = false;
   let mountTimer = 0;
   let danmakuCount = 0;
@@ -213,10 +253,25 @@ export function createDanmakuChatController(args: {
     const input = querySelector(INPUT_SELECTORS);
     const sendBtn = querySelector(SEND_BTN_SELECTORS);
 
-    if (!input && !sendBtn) {
+    // Decide which mode to use. When Bilibili's native danmaku input is usable
+    // (danmaku on), we piggy-back on it (parasite mode). When it is missing or
+    // disabled (danmaku off), we mount our own standalone input so the user can
+    // still send to the room. We re-evaluate on every mount check so toggling
+    // danmaku on/off flips between the two modes automatically.
+    const nativeUsable = isElementUsable(input) && isElementUsable(sendBtn);
+
+    if (!nativeUsable) {
+      // Native input unavailable — tear down parasite UI (restoring the send
+      // button corners) and switch to our standalone input.
+      teardownParasiteButton();
+      ensureStandaloneInputMounted();
       scheduleMountCheck();
       return;
     }
+
+    // Native input is usable — make sure any standalone fallback is removed so
+    // we never show two inputs at once, then (re)attach the parasite button.
+    teardownStandaloneInput();
 
     if (inputEl !== input) {
       inputEl = (input as HTMLTextAreaElement | HTMLInputElement) ?? null;
@@ -304,6 +359,121 @@ export function createDanmakuChatController(args: {
     }
   }
 
+  // Removes the parasite "发送到房间" button and restores the native send
+  // button's original corners. Safe to call repeatedly (no-op if not mounted).
+  function teardownParasiteButton(): void {
+    roomButton?.remove();
+    roomButton = null;
+    if (
+      sendBtnEl instanceof HTMLElement &&
+      sendBtnOriginalBorderRadius !== null
+    ) {
+      sendBtnEl.style.borderRadius = sendBtnOriginalBorderRadius;
+    }
+    sendBtnOriginalBorderRadius = null;
+    sendBtnEl = null;
+    inputEl = null;
+  }
+
+  // Mounts our own standalone room-chat input + send button, used when the
+  // native danmaku input is off/unavailable. It sits in the player control bar
+  // (or, as a last resort, floats bottom-right of the video area) so the user
+  // can always type and send to the room. Idempotent: no-op if already mounted.
+  function ensureStandaloneInputMounted(): void {
+    if (standaloneHost?.isConnected) {
+      return;
+    }
+    const controlBar = querySelector(CONTROL_BAR_SELECTORS);
+    const videoArea = querySelector(VIDEO_AREA_SELECTORS);
+    const mountTarget = controlBar ?? videoArea;
+    if (!mountTarget) {
+      // Nowhere to mount yet (player not ready); the periodic check retries.
+      return;
+    }
+
+    standaloneHost = document.createElement("div");
+    standaloneHost.className = "bsp-standalone-chat";
+    Object.assign(standaloneHost.style, {
+      display: "inline-flex",
+      alignItems: "center",
+      gap: "0",
+      verticalAlign: "middle",
+      margin: "0 8px",
+      height: "28px",
+      zIndex: "80",
+    } as CSSStyleDeclaration);
+
+    standaloneInput = document.createElement("input");
+    standaloneInput.type = "text";
+    standaloneInput.placeholder = "发送到房间";
+    standaloneInput.maxLength = 500;
+    Object.assign(standaloneInput.style, {
+      height: "28px",
+      width: "150px",
+      border: "1px solid rgba(255,255,255,0.35)",
+      borderRight: "none",
+      borderRadius: "4px 0 0 4px",
+      padding: "0 10px",
+      fontSize: "13px",
+      lineHeight: "28px",
+      color: "#fff",
+      background: "rgba(0,0,0,0.35)",
+      outline: "none",
+      fontFamily: "inherit",
+      boxSizing: "border-box",
+    } as CSSStyleDeclaration);
+    standaloneInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        e.stopPropagation();
+        void handleSendToRoom();
+      }
+    });
+
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.textContent = "发送到房间";
+    btn.title = "把内容发送给同房间的人（弹幕已关闭时可用）";
+    Object.assign(btn.style, {
+      height: "28px",
+      background: BILI_PINK,
+      color: "#fff",
+      border: "none",
+      borderRadius: "0 4px 4px 0",
+      padding: "0 12px",
+      fontSize: "13px",
+      lineHeight: "28px",
+      fontWeight: "500",
+      cursor: "pointer",
+      whiteSpace: "nowrap",
+      transition: "background 0.15s",
+      fontFamily: "inherit",
+      boxSizing: "border-box",
+    } as CSSStyleDeclaration);
+    btn.addEventListener("mouseenter", () => {
+      btn.style.background = "#E85A8B";
+    });
+    btn.addEventListener("mouseleave", () => {
+      btn.style.background = BILI_PINK;
+    });
+    btn.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      void handleSendToRoom();
+    });
+
+    standaloneHost.appendChild(standaloneInput);
+    standaloneHost.appendChild(btn);
+    mountTarget.appendChild(standaloneHost);
+  }
+
+  // Removes the standalone input. Safe to call repeatedly (no-op if unmounted).
+  function teardownStandaloneInput(): void {
+    standaloneHost?.remove();
+    standaloneHost = null;
+    standaloneInput = null;
+  }
+
   function getSendButtonHeight(sendBtn: HTMLElement): string {
     const rect = sendBtn.getBoundingClientRect();
     if (rect.height > 0) {
@@ -359,15 +529,21 @@ export function createDanmakuChatController(args: {
   }
 
   async function handleSendToRoom(): Promise<void> {
-    if (!inputEl) {
+    // Take the value from whichever input is currently active: the standalone
+    // input (danmaku-off mode) takes precedence when mounted, otherwise the
+    // native danmaku input (parasite mode). This makes sending work regardless
+    // of the danmaku on/off state.
+    const activeInput: HTMLInputElement | HTMLTextAreaElement | null =
+      standaloneInput?.isConnected ? standaloneInput : inputEl;
+    if (!activeInput) {
       return;
     }
-    const text = inputEl.value.trim();
+    const text = activeInput.value.trim();
     if (!text) {
       return;
     }
     // Clear the input immediately so the user gets quick feedback
-    inputEl.value = "";
+    activeInput.value = "";
     try {
       await args.runtimeSendMessage({
         type: "content:room-chat",
@@ -460,16 +636,10 @@ export function createDanmakuChatController(args: {
         item.remove();
       }
       danmakuItems.length = 0;
-      roomButton?.remove();
-      roomButton = null;
-      // Restore the send button's original right-side rounding we squared off.
-      if (
-        sendBtnEl instanceof HTMLElement &&
-        sendBtnOriginalBorderRadius !== null
-      ) {
-        sendBtnEl.style.borderRadius = sendBtnOriginalBorderRadius;
-      }
-      sendBtnOriginalBorderRadius = null;
+      // Tear down both input modes: the parasite button (restoring the native
+      // send button's corners) and the standalone fallback input.
+      teardownParasiteButton();
+      teardownStandaloneInput();
       overlayResizeObserver?.disconnect();
       overlayResizeObserver = null;
       window.removeEventListener("scroll", updateOverlayPosition);
@@ -478,8 +648,6 @@ export function createDanmakuChatController(args: {
       overlayHost = null;
       overlay = null;
       currentVideoArea = null;
-      inputEl = null;
-      sendBtnEl = null;
     },
   };
 }
