@@ -30,6 +30,7 @@ export function buildPageShareButtonTemplate(args: {
           box-sizing: border-box;
           cursor: grab;
           pointer-events: auto;
+          z-index: 1;
           display: inline-flex;
           align-items: center;
           justify-content: center;
@@ -75,6 +76,7 @@ export function buildPageShareButtonTemplate(args: {
           box-sizing: border-box;
           font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei UI", "PingFang SC", sans-serif;
           pointer-events: auto;
+          z-index: 1;
           opacity: 0;
           transform: translateY(2px);
           transition: opacity 0.12s ease, transform 0.12s ease;
@@ -85,6 +87,16 @@ export function buildPageShareButtonTemplate(args: {
         .share-popover.is-visible {
           opacity: 1;
           transform: translateY(0);
+        }
+        .popover-backdrop {
+          position: absolute;
+          inset: 0;
+          z-index: 0;
+          background: transparent;
+          pointer-events: auto;
+        }
+        .popover-backdrop[hidden] {
+          display: none;
         }
         .popover-heading {
           margin: 0 0 8px;
@@ -240,6 +252,15 @@ export function buildPageShareButtonTemplate(args: {
           color: #999;
           font-style: italic;
           font-weight: 400;
+        }
+        .popover-sync-hint {
+          margin: 4px 0 0;
+          padding: 6px 8px;
+          border-radius: 4px;
+          background: rgba(255, 90, 138, 0.06);
+          color: #a05682;
+          font-size: 11.5px;
+          line-height: 1.5;
         }
         .popover-nickname-row {
           flex-wrap: wrap;
@@ -462,6 +483,7 @@ export function buildPageShareButtonTemplate(args: {
           }
         }
       </style>
+      <div class="popover-backdrop" hidden></div>
       <button class="share-button" type="button">
         <svg viewBox="0 0 24 24" aria-hidden="true">
           <path fill="currentColor" d="M21 0H3a3 3 0 0 0-3 3v9a3 3 0 0 0 3 3h18a3 3 0 0 0 3-3V3a3 3 0 0 0-3-3m1 12a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1h18a1 1 0 0 1 1 1Z"></path>
@@ -491,6 +513,7 @@ export function buildPageShareButtonTemplate(args: {
             <span class="popover-row-label">${t("pageShareSharedVideo")}</span>
             <span class="popover-row-value popover-shared-video-value" title=""></span>
           </div>
+          <p class="popover-sync-hint">${t("pageShareSyncHint")}</p>
           <div class="popover-row popover-nickname-row">
             <span class="popover-row-label">${t("pageShareNickname")}</span>
             <span class="popover-row-value popover-nickname-value" title=""></span>

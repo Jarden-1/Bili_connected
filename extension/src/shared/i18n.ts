@@ -51,6 +51,7 @@ const MESSAGES: Record<"zh" | "en", MessageCatalog> = {
     pageShareSharedVideo: "共享视频",
     pageShareNoSharedVideo: "打开视频后点悬浮按钮同步",
     pageShareNoSharedVideoHint: "打开视频后点悬浮按钮同步",
+    pageShareSyncHint: "切换视频后，点击悬浮按钮即可同步新视频",
     pageShareButtonQuickDisable: "显示悬浮按钮",
     pageShareButtonDisabled: "已关闭页面内同步按钮",
     sectionRoomMembers: "成员",
@@ -164,6 +165,8 @@ const MESSAGES: Record<"zh" | "en", MessageCatalog> = {
     pageShareNoSharedVideo: "Open a video and tap the floating button to sync",
     pageShareNoSharedVideoHint:
       "Open a video and tap the floating button to sync",
+    pageShareSyncHint:
+      "After switching videos, tap the floating button to sync",
     pageShareButtonQuickDisable: "Show floating button",
     pageShareButtonDisabled: "In-page sync button disabled",
     sectionRoomMembers: "Room members",

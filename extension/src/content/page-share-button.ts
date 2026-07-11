@@ -297,6 +297,7 @@ export function createPageShareButtonController(args: {
   let host: HTMLDivElement | null = null;
   let button: HTMLButtonElement | null = null;
   let popover: HTMLDivElement | null = null;
+  let popoverBackdrop: HTMLDivElement | null = null;
   let popoverStatus: HTMLParagraphElement | null = null;
   let popoverToggle: HTMLInputElement | null = null;
   let joinSection: HTMLDivElement | null = null;
@@ -383,6 +384,12 @@ export function createPageShareButtonController(args: {
     popover.style.top = `${popoverPosition.y}px`;
     popover.hidden = !popoverVisible;
     popover.classList.toggle("is-visible", popoverVisible);
+    if (popoverBackdrop) {
+      // The backdrop only intercepts clicks while the popover is open. When it
+      // is hidden, display:none releases the screen so the Bilibili page stays
+      // fully clickable (no accidental "follow" / "like" on pass-through).
+      popoverBackdrop.hidden = !popoverVisible;
+    }
     popoverToggle.checked = enabled;
     popoverToggle.disabled = settingsPending;
 
@@ -533,6 +540,7 @@ export function createPageShareButtonController(args: {
     host = null;
     button = null;
     popover = null;
+    popoverBackdrop = null;
     popoverStatus = null;
     popoverToggle = null;
     joinSection = null;
@@ -730,6 +738,7 @@ export function createPageShareButtonController(args: {
     );
     button = shadowRoot.querySelector("button");
     popover = shadowRoot.querySelector(".share-popover");
+    popoverBackdrop = shadowRoot.querySelector(".popover-backdrop");
     popoverStatus = shadowRoot.querySelector(".popover-status");
     popoverToggle = shadowRoot.querySelector(".quick-toggle-input");
     joinSection = shadowRoot.querySelector(".popover-section-join");
@@ -768,10 +777,20 @@ export function createPageShareButtonController(args: {
       showPopover({ refresh: false }),
     );
     popover?.addEventListener("pointerleave", hidePopoverSoon);
+    popoverBackdrop?.addEventListener("click", () => hidePopover());
     popoverToggle?.addEventListener("change", (event) => {
       void handleQuickToggleChange(event);
     });
     shadowRoot.addEventListener("focusout", (event) => {
+      // While editing the nickname, never auto-close on focus loss.
+      // On Windows, the IME candidate window is an OS-level surface that
+      // steals focus from the input and fires a focusout with a null/outside
+      // relatedTarget. macOS IME does not do this, which is why the bug only
+      // reproduced on Windows. Guarding here keeps the popover (and the
+      // partially typed nickname) alive until the user explicitly saves/cancels.
+      if (nicknameEditing) {
+        return;
+      }
       const relatedTarget = (event as FocusEvent).relatedTarget;
       if (relatedTarget instanceof Node && shadowRoot.contains(relatedTarget)) {
         return;
