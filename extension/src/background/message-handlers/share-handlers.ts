@@ -1,0 +1,449 @@
+import { t } from "../../shared/i18n";
+import { areSharedVideoUrlsEqual } from "../../shared/url";
+import { isSocketWritable } from "../socket-manager";
+import type { MessageHandlerContext } from "./context";
+import type {
+  ShareContextResponse,
+  ShareCurrentVideoResponse,
+} from "../../shared/messages";
+
+type Respond = (response?: unknown) => void;
+
+export function handleGetShareContext(
+  context: MessageHandlerContext,
+  sendResponse: Respond,
+): void {
+  const sharedVideo = context.roomSessionState.roomState?.sharedVideo ?? null;
+  const roomState = context.roomSessionState.roomState;
+  sendResponse({
+    ok: true,
+    roomCode: context.roomSessionState.roomCode,
+    joinToken: context.roomSessionState.joinToken ?? null,
+    memberCount: roomState?.members.length ?? null,
+    displayName: context.roomSessionState.displayName,
+    members:
+      roomState?.members.map((member) => ({
+        id: member.id,
+        name: member.name,
+      })) ?? [],
+    sharedVideo: sharedVideo
+      ? {
+          videoId: sharedVideo.videoId,
+          url: sharedVideo.url,
+          title: sharedVideo.title,
+        }
+      : null,
+  } satisfies ShareContextResponse);
+}
+
+export async function handlePopupGetActiveVideo(
+  context: MessageHandlerContext,
+  sendResponse: Respond,
+): Promise<void> {
+  const response = await context.shareController.getActiveVideoPayload();
+  if (!response.ok && response.error) {
+    context.connectionState.lastError = response.error;
+  } else {
+    context.connectionState.lastError = null;
+  }
+  context.notifyAll();
+  sendResponse(response);
+}
+
+export async function handlePopupShareCurrentVideo(
+  context: MessageHandlerContext,
+  sendResponse: Respond,
+): Promise<void> {
+  const response = await context.shareController.getActiveVideoPayload();
+  if (!response.ok || !response.payload) {
+    context.connectionState.lastError =
+      response.error ?? t("popupErrorCannotReadCurrentVideo");
+    context.notifyAll();
+    sendResponse({ ok: false, error: context.connectionState.lastError });
+    return;
+  }
+  context.connectionState.lastError = null;
+  const shareResult = await context.shareController.queueOrSendSharedVideo(
+    response.payload,
+    response.tabId,
+  );
+  if (shareResult.ok === false) {
+    context.connectionState.lastError = shareResult.error;
+    context.notifyAll();
+    sendResponse({ ok: false, error: shareResult.error });
+    return;
+  }
+  await context.persistState();
+  context.notifyAll();
+  sendResponse({ ok: true });
+}
+
+export async function handleContentShareCurrentVideo(
+  context: MessageHandlerContext,
+  sender: chrome.runtime.MessageSender,
+  sendResponse: Respond,
+): Promise<void> {
+  const response = await context.shareController.getVideoPayloadFromTab(
+    sender.tab,
+  );
+  if (!response.ok || !response.payload) {
+    context.connectionState.lastError =
+      response.error ?? t("popupErrorCannotReadCurrentVideo");
+    context.notifyAll();
+    sendResponse({
+      ok: false,
+      error: context.connectionState.lastError,
+    } satisfies ShareCurrentVideoResponse);
+    return;
+  }
+
+  context.connectionState.lastError = null;
+  const shareResult = await context.shareController.queueOrSendSharedVideo(
+    response.payload,
+    response.tabId,
+  );
+  if (shareResult.ok === false) {
+    context.connectionState.lastError = shareResult.error;
+    context.notifyAll();
+    sendResponse({
+      ok: false,
+      error: shareResult.error,
+    } satisfies ShareCurrentVideoResponse);
+    return;
+  }
+  await context.persistState();
+  context.notifyAll();
+  sendResponse({ ok: true } satisfies ShareCurrentVideoResponse);
+}
+
+export async function handleOpenSharedVideo(
+  context: MessageHandlerContext,
+  sendResponse: Respond,
+): Promise<void> {
+  await context.tabController.openSharedVideoFromPopup();
+  sendResponse({ ok: true });
+}
+
+/**
+ * Identity check only: the sender must be the room's current sharer. The
+ * source-tab binding is verified separately in the handler (after the room
+ * check) so it can be re-claimed when an MV3 worker restart lost it. This is
+ * also deliberately not gated on connectivity — the handler defers offline.
+ */
+function canAutoShareNextVideoFromSender(
+  context: MessageHandlerContext,
+): boolean {
+  const sharedByMemberId =
+    context.roomSessionState.roomState?.sharedVideo?.sharedByMemberId;
+  return (
+    context.roomSessionState.roomCode !== null &&
+    context.roomSessionState.memberToken !== null &&
+    context.roomSessionState.memberId !== null &&
+    sharedByMemberId === context.roomSessionState.memberId
+  );
+}
+
+export async function handleAutoShareNextVideo(
+  context: MessageHandlerContext,
+  message: {
+    payload: { previousSharedUrl: string; targetNormalizedUrl: string };
+  },
+  sender: chrome.runtime.MessageSender,
+  sendResponse: Respond,
+): Promise<void> {
+  if (!canAutoShareNextVideoFromSender(context)) {
+    sendResponse({ ok: true } satisfies ShareCurrentVideoResponse);
+    return;
+  }
+
+  // While disconnected the local room state may be stale, and queuing the
+  // share to flush on reconnect would let it overwrite whatever another
+  // member shared in the meantime (the `room:joined` path flushes pending
+  // shares before the fresh `room:state` arrives). Defer with a retryable
+  // failure so the content controller retries once reconnected, when the
+  // room check below can run against authoritative state.
+  //
+  // `awaitingFreshRoomState` extends the same guard across the reconnect
+  // handshake: the socket reports `connected` as soon as it opens, but the
+  // re-sent `room:join` is not acknowledged (`room:joined` → fresh
+  // `room:state`) until later. Sending in that window would run against a
+  // stale `roomState`/member token, and `queueOrSendSharedVideo` returns
+  // success immediately — silencing the content retry — even if the server
+  // rejects the `video:share` for not-yet-rejoined, or the room has since
+  // been advanced by another member. Keep deferring until authoritative
+  // room state lands.
+  //
+  // `!isSocketWritable` closes the CLOSING micro-window: the socket has
+  // already moved to CLOSING/CLOSED but its close event has not fired, so
+  // `connected` still reads true. Without this the auto-share would reach
+  // `queueOrSendSharedVideo`, take its offline branch, and queue a
+  // `pendingSharedVideo` that the reconnect `room:joined` flushes before
+  // fresh `room:state` — clobbering whatever the room advanced to.
+  if (
+    !context.connectionState.connected ||
+    !isSocketWritable(context.connectionState.socket) ||
+    context.roomSessionState.awaitingFreshRoomState
+  ) {
+    context.diagnosticsController.log(
+      "content",
+      context.connectionState.connected
+        ? "Auto-share next video deferred: awaiting fresh room state after reconnect"
+        : "Auto-share next video deferred: offline, will retry after reconnect",
+    );
+    sendResponse({
+      ok: false,
+      deferred: true,
+    } satisfies ShareCurrentVideoResponse);
+    return;
+  }
+
+  // Whether the room is still parked on the video that was shared when
+  // this auto-share was scheduled. Re-read room state each call because
+  // awaits below yield the event loop, during which the same member could
+  // share a different video or fresh room state could arrive; without
+  // re-checking, the stale timer would overwrite the room back to the
+  // previous video's next episode.
+  // Classify the room against the video this auto-share was scheduled from
+  // (`previousSharedUrl`):
+  //   - "on-scheduled": the room is parked on it and we still own the
+  //     share → safe to advance to the next video.
+  //   - "share-in-flight": the room has not reached it yet because our OWN
+  //     share of it is still awaiting confirmation — chained autoplay
+  //     (A→B→C) outran the room round-trip, so when C arrives the room is
+  //     still on A while `previousSharedUrl` is B, the video we just shared
+  //     but whose `room:state` has not returned. Retry without consuming
+  //     the page-bridge attempt budget; once B confirms, the retry sees
+  //     "on-scheduled" and advances to C.
+  //   - "moved-on": the room is on a different video for any other reason
+  //     (another member shared, the room genuinely advanced past it, …) →
+  //     skip so this stale autoplay does not override it.
+  const classifyRoomSchedule = ():
+    | "on-scheduled"
+    | "share-in-flight"
+    | "moved-on" => {
+    const sharedVideo = context.roomSessionState.roomState?.sharedVideo;
+    const sharedVideoUrl = sharedVideo?.url ?? null;
+    if (
+      sharedVideoUrl !== null &&
+      areSharedVideoUrlsEqual(
+        sharedVideoUrl,
+        message.payload.previousSharedUrl,
+      ) &&
+      // The local member must still own the share. If another member
+      // re-shared the same URL during an await, the URL is unchanged but
+      // `sharedByMemberId` is now someone else's — this stale autoplay must
+      // not override the new sharer's freshly acquired control.
+      context.roomSessionState.memberId !== null &&
+      sharedVideo?.sharedByMemberId === context.roomSessionState.memberId
+    ) {
+      return "on-scheduled";
+    }
+    const inFlightOwnShareUrl =
+      context.shareController.getActivePendingLocalShareUrl();
+    if (
+      inFlightOwnShareUrl !== null &&
+      areSharedVideoUrlsEqual(
+        inFlightOwnShareUrl,
+        message.payload.previousSharedUrl,
+      )
+    ) {
+      return "share-in-flight";
+    }
+    return "moved-on";
+  };
+
+  const scheduleState = classifyRoomSchedule();
+  if (scheduleState === "share-in-flight") {
+    context.diagnosticsController.log(
+      "content",
+      "Auto-share next video deferred: room has not confirmed the previous share yet",
+    );
+    sendResponse({
+      ok: false,
+      deferred: true,
+    } satisfies ShareCurrentVideoResponse);
+    return;
+  }
+  if (scheduleState === "moved-on") {
+    context.diagnosticsController.log(
+      "content",
+      "Auto-share next video skipped: room moved past the scheduled shared video",
+    );
+    sendResponse({ ok: true } satisfies ShareCurrentVideoResponse);
+    return;
+  }
+
+  // The auto-share must come from the remembered shared source tab. After
+  // an MV3 service worker restart `sharedTabId` is lost (it is not in the
+  // persisted snapshot) while room state is restored, so a genuine source
+  // tab would be silently skipped. Admit an as-yet-unbound binding here,
+  // but defer actually re-claiming it until the payload below validates the
+  // scheduled next video: claiming up front would let a tab whose payload
+  // fails or resolves a stale URL permanently steal the binding from the
+  // real source tab, blocking all later auto-shares and playback updates.
+  const isRememberedSourceTab =
+    context.tabController.isRememberedSharedSourceTab(sender.tab?.id);
+  if (
+    !isRememberedSourceTab &&
+    !context.tabController.canReclaimSharedSourceTab(sender.tab?.id)
+  ) {
+    context.diagnosticsController.log(
+      "content",
+      "Auto-share next video skipped: not from the remembered shared source tab",
+    );
+    sendResponse({ ok: true } satisfies ShareCurrentVideoResponse);
+    return;
+  }
+
+  const response = await context.shareController.getVideoPayloadFromTab(
+    sender.tab,
+  );
+  if (!response.ok || !response.payload) {
+    context.diagnosticsController.log(
+      "content",
+      `Auto-share next video skipped: ${response.error ?? t("popupErrorCannotReadCurrentVideo")}`,
+    );
+    sendResponse({ ok: false } satisfies ShareCurrentVideoResponse);
+    return;
+  }
+
+  // The tab must currently resolve the exact next episode this auto-share
+  // was scheduled for. Mid-SPA the page bridge can still return the
+  // previous episode's `__INITIAL_STATE__` (a no-op share), or the tab may
+  // have already jumped past it to a different video (which we must not
+  // share in the room's name). In both cases the resolved URL differs from
+  // the scheduled `targetNormalizedUrl`, so report a retryable failure and
+  // let the content controller retry until the bridge settles on it.
+  if (
+    !areSharedVideoUrlsEqual(
+      response.payload.video.url,
+      message.payload.targetNormalizedUrl,
+    )
+  ) {
+    context.diagnosticsController.log(
+      "content",
+      "Auto-share next video not ready: tab has not resolved the scheduled next video",
+    );
+    sendResponse({ ok: false } satisfies ShareCurrentVideoResponse);
+    return;
+  }
+
+  // The SPA can resolve the next video's identity before its new `<video>`
+  // element is bound/loaded, in which case the content side returns
+  // `playback: null`. Sharing now would advance the room to the next
+  // episode but the server backfills the missing playback as paused@0 — the
+  // room would jump to a 0s paused state while the sharer's own later
+  // `play` could still be broadcast-suppressed as a non-shared page until
+  // room state applies. Treat a missing playback as a retryable
+  // "page not ready" so the content controller retries once the element is
+  // bound and the current playback can be read.
+  if (!response.payload.playback) {
+    context.diagnosticsController.log(
+      "content",
+      "Auto-share next video not ready: next video has no readable playback yet",
+    );
+    sendResponse({ ok: false } satisfies ShareCurrentVideoResponse);
+    return;
+  }
+
+  // `getVideoPayloadFromTab` yielded the event loop, so re-confirm the room
+  // is still on `previousSharedUrl` before overwriting it. A manual share
+  // or fresh room state received in that window means the room has moved
+  // on and this stale auto-share must not clobber it. (Only "on-scheduled"
+  // may proceed here: having already passed the check above the room was on
+  // `previousSharedUrl`, so a non-on-scheduled recheck means it advanced —
+  // treat any such state as moved-on and skip rather than send.)
+  if (classifyRoomSchedule() !== "on-scheduled") {
+    context.diagnosticsController.log(
+      "content",
+      "Auto-share next video skipped: room moved past the scheduled shared video while reading the tab",
+    );
+    sendResponse({ ok: true } satisfies ShareCurrentVideoResponse);
+    return;
+  }
+
+  // Payload, target, and room are all validated; only now claim the
+  // source-tab binding if it was lost (MV3 restart). Re-claiming here —
+  // not before reading the tab — guarantees a tab that failed validation
+  // never strands the binding away from the real source tab.
+  if (!isRememberedSourceTab) {
+    // The earlier `canReclaimSharedSourceTab` probe only proved the slot
+    // was free *before* the tab read. During that await the genuine
+    // source tab can send a playback update and bind `sharedTabId` to
+    // itself, so re-claiming now returns false. Bail out instead of
+    // continuing: `queueOrSendSharedVideo` would otherwise re-`remember`
+    // the binding with this stale/non-source tab and advance the room in
+    // the sharer's name from a tab that has lost its eligibility.
+    if (
+      !context.tabController.reclaimSharedSourceTabIfUnclaimed(sender.tab?.id)
+    ) {
+      context.diagnosticsController.log(
+        "content",
+        "Auto-share next video skipped: source tab binding was claimed during the tab read",
+      );
+      sendResponse({ ok: true } satisfies ShareCurrentVideoResponse);
+      return;
+    }
+  }
+
+  // Re-check connectivity right before sending. The validations above
+  // (`getVideoPayloadFromTab`, the re-claim) yielded the event loop, so the
+  // socket may have dropped (or a reconnect handshake started) in between.
+  // `queueOrSendSharedVideo` would then take its offline branch and store
+  // this non-explicit auto-share as a pending share that flushes on the
+  // next `room:joined` — before the fresh `room:state` — clobbering whatever
+  // the room advanced to while we were disconnected. Defer instead so the
+  // content controller retries against authoritative state. `!isSocketWritable`
+  // also covers the CLOSING micro-window where `connected` still reads true.
+  if (
+    !context.connectionState.connected ||
+    !isSocketWritable(context.connectionState.socket) ||
+    context.roomSessionState.awaitingFreshRoomState
+  ) {
+    context.diagnosticsController.log(
+      "content",
+      "Auto-share next video deferred: connection dropped while validating, will retry after reconnect",
+    );
+    sendResponse({
+      ok: false,
+      deferred: true,
+    } satisfies ShareCurrentVideoResponse);
+    return;
+  }
+
+  // An explicit share the user just made only sets a pending local share;
+  // `roomState.sharedVideo` still holds the previous video until the server
+  // confirms, so the room re-check above can still pass. Sending now would
+  // overwrite that unconfirmed manual share — skip and let it stand. Only a
+  // *manual* pending share blocks here: our own previous in-flight
+  // auto-share is the chain we are advancing, so skipping on it would strand
+  // the room one step behind when chained autoplay outruns confirmation.
+  if (context.shareController.hasActivePendingManualShare()) {
+    context.diagnosticsController.log(
+      "content",
+      "Auto-share next video skipped: a manual share is awaiting confirmation",
+    );
+    sendResponse({ ok: true } satisfies ShareCurrentVideoResponse);
+    return;
+  }
+
+  const shareResult = await context.shareController.queueOrSendSharedVideo(
+    response.payload,
+    response.tabId,
+    true,
+  );
+  if (shareResult.ok === false) {
+    context.diagnosticsController.log(
+      "content",
+      `Auto-share next video failed: ${shareResult.error}`,
+    );
+    sendResponse({
+      ok: false,
+      error: shareResult.error,
+    } satisfies ShareCurrentVideoResponse);
+    return;
+  }
+  await context.persistState();
+  context.notifyAll();
+  sendResponse({ ok: true } satisfies ShareCurrentVideoResponse);
+}
